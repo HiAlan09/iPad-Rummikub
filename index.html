@@ -69,6 +69,9 @@
             transform: translateY(-5px);
             box-shadow: 0 8px 16px -2px rgba(245, 158, 11, 0.6), 0 3px 6px -2px rgba(245, 158, 11, 0.4);
         }
+        .tile-newly-played {
+            box-shadow: 0 0 0 2.5px #10b981, 0 4px 10px rgba(16, 185, 129, 0.4);
+        }
         .tile-retrieved-glow {
             animation: pulseGlow 1.5s infinite;
         }
@@ -103,6 +106,13 @@
         }
         .animate-pop {
             animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes popInCentered {
+            0% { transform: translateX(-50%) scale(0.92); opacity: 0; }
+            100% { transform: translateX(-50%) scale(1); opacity: 1; }
+        }
+        .animate-pop-centered {
+            animation: popInCentered 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
         .animate-float { animation: float 5s ease-in-out infinite; }
@@ -243,6 +253,9 @@
         const MessageSquare = (p) => <IconBase {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></IconBase>;
         const HomeIcon = (p) => <IconBase {...p}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></IconBase>;
         const RefreshCw = (p) => <IconBase {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></IconBase>;
+        const ArrowLeft = (p) => <IconBase {...p}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></IconBase>;
+        const ArrowRight = (p) => <IconBase {...p}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></IconBase>;
+        const AlertTriangle = (p) => <IconBase {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></IconBase>;
 
         const JokerArt = ({ type = 'regular', color = 'red', size = 26 }) => {
             if (type === 'regular') {
@@ -518,6 +531,90 @@
             return 0;
         };
 
+        // 智能排序牌组：
+        // 1. 如果有镜像百搭，自动将镜像百搭放置在对称中心！
+        // 2. 如果是同色顺组，百搭牌优先填补空缺（如 6 与 8 之间自动填补百搭）！
+        // 3. 避免暴力将百搭丢到末尾导致合法牌被判非法！
+        const sortMeldSmart = (tiles) => {
+            if (!tiles || tiles.length <= 1) return tiles;
+
+            // 1. 镜像百搭优先处理
+            const mirrorTile = tiles.find(t => t.jokerType === 'mirror');
+            if (mirrorTile) {
+                const others = tiles.filter(t => t.id !== mirrorTile.id);
+                // 对其余牌按数字/颜色排序并对半拆分置于镜像两侧
+                others.sort((a, b) => a.value - b.value || a.color.localeCompare(b.color));
+                const half = Math.floor(others.length / 2);
+                const left = others.slice(0, half);
+                const right = others.slice(half);
+                return [...left, mirrorTile, ...right];
+            }
+
+            const nonJokers = tiles.filter(t => !t.isJoker);
+            const jokers = tiles.filter(t => t.isJoker);
+
+            if (nonJokers.length === 0) return tiles;
+
+            const firstCol = nonJokers[0].color;
+            const isSingleColor = nonJokers.every(t => t.color === firstCol);
+
+            // 2. 顺组倾向（同色）：支持百搭牌智能填补断档空位（例如 6 与 8 之间填入百搭）
+            if (isSingleColor && !jokers.some(j => j.jokerType === 'color_change')) {
+                const sortedNonJokers = [...nonJokers].sort((a, b) => a.value - b.value);
+                const result = [];
+                let availableJokers = [...jokers];
+
+                for (let i = 0; i < sortedNonJokers.length; i++) {
+                    const current = sortedNonJokers[i];
+                    if (result.length > 0) {
+                        const lastNonJoker = result.slice().reverse().find(t => !t.isJoker);
+                        if (lastNonJoker) {
+                            const gap = current.value - lastNonJoker.value - 1;
+                            // 如果中间断档缺了牌且有百搭可用，自动把百搭填补在缝隙中！
+                            if (gap > 0 && availableJokers.length > 0) {
+                                let filledGap = 0;
+                                while (filledGap < gap && availableJokers.length > 0) {
+                                    const j = availableJokers.shift();
+                                    result.push(j);
+                                    filledGap += (j.jokerType === 'double' ? 2 : 1);
+                                }
+                            }
+                        }
+                    }
+                    result.push(current);
+                }
+
+                // 剩余的百搭牌尝试追加到尾部或头部
+                while (availableJokers.length > 0) {
+                    result.push(availableJokers.shift());
+                }
+
+                // 若以此方式形成的组合合法，直接采用；否则保留基础排序
+                if (isValidMeld(result)) return result;
+
+                // 备选尝试：百搭放头部
+                const headTry = [...jokers, ...sortedNonJokers];
+                if (isValidMeld(headTry)) return headTry;
+
+                return result;
+            }
+
+            // 3. 群组倾向（同数字不同色）
+            const firstVal = nonJokers[0].value;
+            const isSameValue = nonJokers.every(t => t.value === firstVal);
+            if (isSameValue) {
+                return [...nonJokers.sort((a, b) => a.color.localeCompare(b.color)), ...jokers];
+            }
+
+            // 默认排序
+            return [...tiles].sort((a, b) => {
+                if (a.isJoker && !b.isJoker) return 1;
+                if (!a.isJoker && b.isJoker) return -1;
+                if (a.color !== b.color) return a.color.localeCompare(b.color);
+                return a.value - b.value;
+            });
+        };
+
         // 智能整组批量追加试拼：支持多张手牌（如变色百搭+蓝9）整体插入到目标顺组或群组中
         const tryInsertBatchIntoMeld = (meld, tilesToAdd) => {
             if (!tilesToAdd || tilesToAdd.length === 0) return meld;
@@ -557,52 +654,23 @@
                 }
             }
 
+            // 4. 尝试智能排序重组
+            for (const p of perms) {
+                const candidate = sortMeldSmart([...meld, ...p]);
+                if (isValidMeld(candidate)) return candidate;
+            }
+
             return null;
         };
 
-        // 智能定位并插入单张牌到牌组
         const tryInsertTileIntoMeld = (meld, tile) => {
             return tryInsertBatchIntoMeld(meld, [tile]);
-        };
-
-        // 智能排序牌组：同色优先按数值升序排（顺组），同数值优先按颜色排（群组）
-        const sortMeldSmart = (tiles) => {
-            if (!tiles || tiles.length <= 1) return tiles;
-            const nonJokers = tiles.filter(t => !t.isJoker);
-            if (nonJokers.length === 0) return tiles;
-
-            const firstCol = nonJokers[0].color;
-            const isSingleColor = nonJokers.every(t => t.color === firstCol);
-
-            if (isSingleColor) {
-                // 同色倾向顺组：按数值从小到大升序排序，百搭牌保留在末尾
-                return [...tiles].sort((a, b) => {
-                    if (a.isJoker && !b.isJoker) return 1;
-                    if (!a.isJoker && b.isJoker) return -1;
-                    return a.value - b.value;
-                });
-            } else {
-                const firstVal = nonJokers[0].value;
-                const isSameValue = nonJokers.every(t => t.value === firstVal);
-                if (isSameValue) {
-                    // 同数字倾向群组：按颜色字母排序
-                    return [...tiles].sort((a, b) => a.color.localeCompare(b.color));
-                }
-                // 默认排序
-                return [...tiles].sort((a, b) => {
-                    if (a.isJoker) return 1;
-                    if (b.isJoker) return -1;
-                    if (a.color !== b.color) return a.color.localeCompare(b.color);
-                    return a.value - b.value;
-                });
-            }
         };
 
         // 判定手牌是否能等价置换此百搭（全面支持双重百搭需要 2 张手牌等价置换的规则）
         const canTileSubstituteJoker = (meld, jokerTile, handTilesInput) => {
             if (!jokerTile || !jokerTile.isJoker) return false;
             if (!handTilesInput) return false;
-            // 规范化输入：兼容单张牌对象或牌组数组，防止 handTiles.some 报错
             const handTiles = Array.isArray(handTilesInput) ? handTilesInput : [handTilesInput];
             if (handTiles.length === 0) return false;
             if (handTiles.some(t => t.isJoker)) return false;
@@ -631,7 +699,7 @@
             return isValidMeld(replacedMeld);
         };
 
-        const Tile = ({ tile, isSelected, onClick, size = "md", customClass = "" }) => {
+        const Tile = ({ tile, isSelected, onClick, size = "md", customClass = "", isNewlyPlayed = false }) => {
             const colorConfig = TILE_COLORS[tile.color] || TILE_COLORS.black;
             
             const sizeStyle = {
@@ -645,7 +713,9 @@
                     onClick={onClick}
                     className={`tile-3d relative flex flex-col items-center justify-between p-1 cursor-pointer shrink-0 border border-amber-950/20 ${sizeStyle} ${
                         isSelected ? 'tile-selected ring-4 ring-amber-500 scale-105 z-10' : ''
-                    } ${tile.isRetrieved ? 'tile-retrieved-glow ring-2 ring-amber-400' : ''} ${customClass}`}
+                    } ${isNewlyPlayed ? 'tile-newly-played ring-2 ring-emerald-400' : ''} ${
+                        tile.isRetrieved ? 'tile-retrieved-glow ring-2 ring-amber-400' : ''
+                    } ${customClass}`}
                 >
                     <div className="w-1.5 h-1.5 rounded-full bg-slate-300/80 mb-0.5"></div>
                     <div className="flex-1 flex items-center justify-center font-black tracking-tighter">
@@ -657,11 +727,176 @@
                             </span>
                         )}
                     </div>
-                    {tile.isRetrieved ? (
+                    {isNewlyPlayed ? (
+                        <span className="text-[7px] font-black text-emerald-700 bg-emerald-200 px-1 rounded-sm leading-none">本回</span>
+                    ) : tile.isRetrieved ? (
                         <span className="text-[7px] font-black text-amber-600 bg-amber-200 px-1 rounded-sm leading-none">待出</span>
                     ) : (
                         <div className="w-4 h-1 border-b-2 border-slate-300 rounded-full mb-0.5 opacity-60"></div>
                     )}
+                </div>
+            );
+        };
+
+        const TableMeldGroup = ({ 
+            meld, 
+            index, 
+            isSelected, 
+            onClick, 
+            onTileClick, 
+            selectedTileInfo,
+            initialTableTileIds,
+            onMoveInside,
+            onSplit,
+            onExtract,
+            onSubstitute,
+            onTakeBack,
+            onDeselectTile,
+            canSubstitute
+        }) => {
+            const valid = isValidMeld(meld);
+            const isRun = isValidRun(meld);
+            const isGroup = isValidGroup(meld);
+
+            // 检查该牌组中是否含有本回合新打出的手牌
+            const hasNewTiles = meld.some(t => initialTableTileIds && !initialTableTileIds.has(t.id));
+            const isSelectedMeldHavingSelectedTile = selectedTileInfo && selectedTileInfo.meldIndex === index;
+
+            return (
+                <div 
+                    onClick={onClick}
+                    className={`relative p-2 rounded-2xl transition-all duration-200 border-2 ${
+                        isSelected 
+                            ? 'border-amber-400 bg-amber-500/15 shadow-[0_0_20px_rgba(245,158,11,0.25)]' 
+                            : valid 
+                                ? hasNewTiles 
+                                    ? 'border-emerald-500/80 bg-emerald-950/20 ring-1 ring-emerald-500/40' 
+                                    : 'border-slate-700/70 bg-slate-900/60 hover:border-slate-500' 
+                                : 'border-rose-500 bg-rose-950/40 animate-pulse'
+                    } flex flex-col gap-1 shrink-0 cursor-pointer`}
+                >
+                    {/* 就近悬浮操作栏（贴紧选中的牌组显示，触手可及！） */}
+                    {isSelectedMeldHavingSelectedTile && (
+                        <div 
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute -top-11 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 border-2 border-amber-500 rounded-xl px-2 py-1 shadow-2xl flex items-center gap-1.5 whitespace-nowrap animate-pop-centered backdrop-blur-md"
+                        >
+                            <span className="text-[11px] font-bold text-amber-300 mr-0.5">
+                                [{selectedTileInfo.tile.isJoker ? '百搭牌' : selectedTileInfo.tile.value}]
+                            </span>
+
+                            {/* 左移 / 右移 */}
+                            <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 border border-slate-700">
+                                <button
+                                    onClick={() => onMoveInside(index, selectedTileInfo.tileIndex, -1)}
+                                    disabled={selectedTileInfo.tileIndex === 0}
+                                    className="p-1 rounded text-slate-300 hover:text-white disabled:opacity-30 hover:bg-slate-700 active:scale-95 transition-all"
+                                    title="在牌组内向左移动"
+                                >
+                                    <ArrowLeft size={13} />
+                                </button>
+                                <button
+                                    onClick={() => onMoveInside(index, selectedTileInfo.tileIndex, 1)}
+                                    disabled={selectedTileInfo.tileIndex === meld.length - 1}
+                                    className="p-1 rounded text-slate-300 hover:text-white disabled:opacity-30 hover:bg-slate-700 active:scale-95 transition-all"
+                                    title="在牌组内向右移动"
+                                >
+                                    <ArrowRight size={13} />
+                                </button>
+                            </div>
+
+                            {/* 拆分 */}
+                            {meld.length >= 2 && selectedTileInfo.tileIndex > 0 && (
+                                <button
+                                    onClick={onSplit}
+                                    className="px-2 py-0.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow active:scale-95 transition-all"
+                                    title="从当前选中的牌切分为两组"
+                                >
+                                    ✂️ 拆分
+                                </button>
+                            )}
+
+                            {/* 抽离 */}
+                            {meld.length > 1 && (
+                                <button
+                                    onClick={onExtract}
+                                    className="px-2 py-0.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 active:scale-95 transition-all"
+                                    title="抽离为独立牌块"
+                                >
+                                    📤 抽离
+                                </button>
+                            )}
+
+                            {/* 置换（若是百搭牌） */}
+                            {selectedTileInfo.tile.isJoker && (
+                                <button
+                                    onClick={onSubstitute}
+                                    disabled={!canSubstitute}
+                                    className={`px-2 py-0.5 rounded-lg text-xs font-black shadow flex items-center gap-1 active:scale-95 transition-all ${
+                                        canSubstitute 
+                                            ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 animate-bounce' 
+                                            : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                                    }`}
+                                >
+                                    <RefreshCw size={12} />
+                                    <span>{canSubstitute ? '置换百搭' : '置换条件不符'}</span>
+                                </button>
+                            )}
+
+                            {/* 撤回手牌 */}
+                            {initialTableTileIds && !initialTableTileIds.has(selectedTileInfo.tile.id) && (
+                                <button
+                                    onClick={onTakeBack}
+                                    className="px-2 py-0.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 active:scale-95 transition-all"
+                                >
+                                    撤回手牌
+                                </button>
+                            )}
+
+                            <button
+                                onClick={onDeselectTile}
+                                className="p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-800 ml-0.5"
+                            >
+                                <XIcon size={14} />
+                            </button>
+                        </div>
+                    )}
+
+                    <div className="flex items-center justify-between px-1 text-[10px] font-mono font-bold tracking-wider mb-0.5 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-slate-400">#{index + 1}</span>
+                            {hasNewTiles && (
+                                <span className="text-[9px] text-emerald-400 bg-emerald-950 px-1 py-0.2 rounded border border-emerald-500/40">
+                                    ✦ 本回变动
+                                </span>
+                            )}
+                        </div>
+                        {valid ? (
+                            <span className="px-1.5 py-0.2 rounded text-emerald-400 bg-emerald-950/70 border border-emerald-500/30 flex items-center gap-0.5">
+                                <Check size={10} /> {isGroup ? '群组' : '顺组'} ({meld.length})
+                            </span>
+                        ) : (
+                            <span className="px-1.5 py-0.2 rounded text-rose-400 bg-rose-950/90 border border-rose-500/50 flex items-center gap-0.5">
+                                <XIcon size={10} /> 不合法 ({meld.length})
+                            </span>
+                        )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 min-h-[58px]">
+                        {meld.map((tile, tIdx) => (
+                            <Tile
+                                key={tile.id}
+                                tile={tile}
+                                size="md"
+                                isSelected={selectedTileInfo?.tile?.id === tile.id}
+                                isNewlyPlayed={initialTableTileIds && !initialTableTileIds.has(tile.id)}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onTileClick(tile, index, tIdx);
+                                }}
+                            />
+                        ))}
+                    </div>
                 </div>
             );
         };
@@ -678,7 +913,7 @@
                                     <BookOpen size={24} />
                                 </div>
                                 <div>
-                                    <h2 className="text-xl font-black text-white tracking-wide">拉密 (Rummikub Deluxe) 规则与置换指南</h2>
+                                    <h2 className="text-xl font-black text-white tracking-wide">拉密 (Rummikub Deluxe) 规则指南</h2>
                                     <p className="text-xs text-slate-400">Rummikub Twist Edition Manual & Substitution Rules</p>
                                 </div>
                             </div>
@@ -689,7 +924,7 @@
 
                         <div className="flex bg-slate-950/60 p-1.5 border-b border-slate-800 gap-1 overflow-x-auto custom-scrollbar">
                             {[
-                                { id: 'substitute', label: '⭐ 置换牌桌百搭 (核心细则)' },
+                                { id: 'substitute', label: '⭐ 置换桌面百搭' },
                                 { id: 'icebreak', label: '1. 破冰出牌 (≥30点)' },
                                 { id: 'melds', label: '2. 顺组与群组' },
                                 { id: 'rearrange', label: '3. 拆牌与重组' },
@@ -790,7 +1025,7 @@
                                             <span className="font-black text-white text-base">牌型 ②：顺组 (Run / 连号顺子)</span>
                                             <span className="text-xs px-2 py-0.5 bg-rose-500/20 text-rose-300 rounded font-mono">同颜色 · 严格连号 · 3至13张</span>
                                         </div>
-                                        <p className="text-xs text-slate-400">颜色完全相同，数字必须严格连续升序。例如：蓝 4-5-6-7。注意：1 为最小，13 为最大，不可首尾连（12-13-1是非法的）。</p>
+                                        <p className="text-xs text-slate-400">颜色完全相同，数字必须严格连续升序。例如：蓝 4-5-6-7。注意：1 为最小，13 为最大，不可首尾连（12-13-1是非法的）。百搭牌可置于前、中、后任意位置替代所需数字。</p>
                                     </div>
                                 </div>
                             )}
@@ -847,7 +1082,7 @@
                                                 <JokerArt type="mirror" size={24} />
                                                 <span className="font-bold text-white text-sm">镜像百搭 (Mirror Joker 🪞)</span>
                                             </div>
-                                            <p className="text-xs text-slate-400">金色双向镜面笑脸，置于正中心，<b>左右两边的牌严格对称</b>（如 4-5-镜像-5-4）。</p>
+                                            <p className="text-xs text-slate-400">金色双向镜面笑脸，置于正中心，<b>左右两边的牌严格同色同值对称</b>（如 黑13-镜像-黑13）。</p>
                                         </div>
                                     </div>
                                 </div>
@@ -901,53 +1136,6 @@
             );
         };
 
-        const TableMeldGroup = ({ meld, index, isSelected, onClick, onTileClick, selectedTileId }) => {
-            const valid = isValidMeld(meld);
-            const isRun = isValidRun(meld);
-            const isGroup = isValidGroup(meld);
-
-            return (
-                <div 
-                    onClick={onClick}
-                    className={`relative p-2 rounded-2xl transition-all duration-200 border-2 ${
-                        isSelected 
-                            ? 'border-amber-400 bg-amber-500/10 shadow-[0_0_20px_rgba(245,158,11,0.25)]' 
-                            : valid 
-                                ? 'border-slate-700/70 bg-slate-900/60 hover:border-slate-500' 
-                                : 'border-rose-500 bg-rose-950/40 animate-pulse'
-                    } flex flex-col gap-1 shrink-0 cursor-pointer`}
-                >
-                    <div className="flex items-center justify-between px-1 text-[10px] font-mono font-bold tracking-wider mb-0.5 whitespace-nowrap">
-                        <span className="text-slate-400">#{index + 1}</span>
-                        {valid ? (
-                            <span className="px-1.5 py-0.2 rounded text-emerald-400 bg-emerald-950/70 border border-emerald-500/30 flex items-center gap-0.5">
-                                <Check size={10} /> {isGroup ? '群组' : '顺组'} ({meld.length})
-                            </span>
-                        ) : (
-                            <span className="px-1.5 py-0.2 rounded text-rose-400 bg-rose-950/90 border border-rose-500/50 flex items-center gap-0.5">
-                                <XIcon size={10} /> 不合法 ({meld.length})
-                            </span>
-                        )}
-                    </div>
-
-                    <div className="flex items-center gap-1.5 min-h-[58px]">
-                        {meld.map((tile) => (
-                            <Tile
-                                key={tile.id}
-                                tile={tile}
-                                size="md"
-                                isSelected={selectedTileId === tile.id}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onTileClick(tile, index);
-                                }}
-                            />
-                        ))}
-                    </div>
-                </div>
-            );
-        };
-
         const ConfigModal = ({ config, setConfig, onStart, onClose }) => {
             return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 safe-top-padding animate-pop">
@@ -965,7 +1153,6 @@
                             <span>豪华 Twist 典藏版 · 112 张牌 · 4 种特殊百搭</span>
                         </div>
 
-                        {/* 1. 玩家人数选择 */}
                         <div className="mb-5 space-y-2">
                             <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap">
                                 <Layers size={14} className="text-amber-400" /> 对战人数
@@ -987,7 +1174,6 @@
                             </div>
                         </div>
 
-                        {/* 2. 主角选择 */}
                         <div className="mb-7 space-y-2">
                             <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap">
                                 <span>🐰</span> 选择你的角色
@@ -1024,7 +1210,6 @@
                             </div>
                         </div>
 
-                        {/* 启动操作 */}
                         <div className="flex gap-2.5">
                             {onClose && (
                                 <button
@@ -1058,12 +1243,15 @@
 
             // 交互状态
             const [selectedHandTiles, setSelectedHandTiles] = useState([]);
-            const [selectedTableTile, setSelectedTableTile] = useState(null); // { tile, meldIndex }
+            const [selectedTableTile, setSelectedTableTile] = useState(null); // { tile, meldIndex, tileIndex }
             const [selectedMeldIndex, setSelectedMeldIndex] = useState(null);
             const [showRules, setShowRules] = useState(false);
             const [notification, setNotification] = useState(null);
             const [logs, setLogs] = useState([]);
             const [winner, setWinner] = useState(null);
+
+            // 防误触摸牌确认弹窗
+            const [showDrawConfirmModal, setShowDrawConfirmModal] = useState(false);
 
             // 回合初始快照（重置整回合）
             const [turnSnapshot, setTurnSnapshot] = useState(null);
@@ -1076,6 +1264,37 @@
             const currentPlayer = players[turnIndex] || null;
             const isHumanTurn = currentPlayer && !currentPlayer.isComputer && gameState === 'playing';
 
+            // 桌面初始牌集合（用于高亮显示本回合新打出的牌）
+            const initialTableTileIds = useMemo(() => {
+                if (!turnSnapshot || !turnSnapshot.tableMelds) return new Set();
+                return new Set(turnSnapshot.tableMelds.flat().map(t => t.id));
+            }, [turnSnapshot]);
+
+            const isEntireTableValid = useMemo(() => {
+                if (tableMelds.length === 0) return true;
+                return tableMelds.every(m => isValidMeld(m));
+            }, [tableMelds]);
+
+            const isJokerSelectedOnTable = selectedTableTile && selectedTableTile.tile.isJoker;
+
+            // 实时探测当前选中的百搭是否可由所选手牌合规置换
+            const canCurrentJokerBeSubstituted = useMemo(() => {
+                if (!isJokerSelectedOnTable || !currentPlayer?.brokenIce) {
+                    return false;
+                }
+                const targetMeld = tableMelds[selectedTableTile.meldIndex];
+                if (!targetMeld) return false;
+
+                const joker = selectedTableTile.tile;
+                if (joker.jokerType === 'double') {
+                    if (selectedHandTiles.length !== 2) return false;
+                } else {
+                    if (selectedHandTiles.length !== 1) return false;
+                }
+
+                return canTileSubstituteJoker(targetMeld, joker, selectedHandTiles);
+            }, [isJokerSelectedOnTable, selectedTableTile, selectedHandTiles, tableMelds, currentPlayer]);
+
             useEffect(() => {
                 return () => {
                     if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current);
@@ -1084,14 +1303,13 @@
 
             const notify = (msg, type = 'info') => {
                 setNotification({ msg, type });
-                setTimeout(() => setNotification(null), 3200);
+                setTimeout(() => setNotification(null), 3600);
             };
 
             const addLog = (msg) => {
                 setLogs(prev => [...prev, msg].slice(-40));
             };
 
-            // 记录出牌步骤快照
             const recordStepSnapshot = () => {
                 setTurnActionStack(prev => [
                     ...prev,
@@ -1102,7 +1320,6 @@
                 ]);
             };
 
-            // 撤销上一步操作
             const undoLastStep = () => {
                 if (!isHumanTurn) return;
                 if (turnActionStack.length === 0) {
@@ -1122,10 +1339,9 @@
                 setSelectedHandTiles([]);
                 setSelectedTableTile(null);
                 setSelectedMeldIndex(null);
-                notify("↩️ 已撤销上一步出牌！", "info");
+                notify("↩️ 已撤销上一步操作！", "info");
             };
 
-            // 重置整个回合操作
             const resetCurrentTurn = () => {
                 if (!turnSnapshot) return;
                 sfx.playDraw();
@@ -1200,30 +1416,24 @@
                 notify(`轮到你的回合 (${humanChar.name})，请破冰出牌 (≥30点) 或摸牌！`, "info");
             };
 
-            const isEntireTableValid = useMemo(() => {
-                if (tableMelds.length === 0) return true;
-                return tableMelds.every(m => isValidMeld(m));
-            }, [tableMelds]);
+            // 牌组内部微调：左移 / 右移
+            const moveTileInsideMeld = (meldIdx, tileIdx, direction) => {
+                const targetIdx = tileIdx + direction;
+                const meld = [...tableMelds[meldIdx]];
+                if (targetIdx < 0 || targetIdx >= meld.length) return;
 
-            const isJokerSelectedOnTable = selectedTableTile && selectedTableTile.tile.isJoker;
+                recordStepSnapshot();
+                sfx.playTileClick();
 
-            // 实时探测当前选中的百搭是否可由所选手牌合规置换 (支持普通/变色百搭用1张，双重百搭用2张)
-            const canCurrentJokerBeSubstituted = useMemo(() => {
-                if (!isJokerSelectedOnTable || !currentPlayer?.brokenIce) {
-                    return false;
-                }
-                const targetMeld = tableMelds[selectedTableTile.meldIndex];
-                if (!targetMeld) return false;
+                const temp = meld[tileIdx];
+                meld[tileIdx] = meld[targetIdx];
+                meld[targetIdx] = temp;
 
-                const joker = selectedTableTile.tile;
-                if (joker.jokerType === 'double') {
-                    if (selectedHandTiles.length !== 2) return false;
-                } else {
-                    if (selectedHandTiles.length !== 1) return false;
-                }
-
-                return canTileSubstituteJoker(targetMeld, joker, selectedHandTiles);
-            }, [isJokerSelectedOnTable, selectedTableTile, selectedHandTiles, tableMelds, currentPlayer]);
+                const newMelds = [...tableMelds];
+                newMelds[meldIdx] = meld;
+                setTableMelds(newMelds);
+                setSelectedTableTile({ tile: temp, meldIndex: meldIdx, tileIndex: targetIdx });
+            };
 
             const provideMoveHint = () => {
                 if (!isHumanTurn) return;
@@ -1344,7 +1554,7 @@
                                     for (let j = i + 1; j < rack.length; j++) {
                                         if (canTileSubstituteJoker(meld, t, [rack[i], rack[j]])) {
                                             setSelectedHandTiles([rack[i], rack[j]]);
-                                            setSelectedTableTile({ tile: t, meldIndex: mIdx });
+                                            setSelectedTableTile({ tile: t, meldIndex: mIdx, tileIndex: meld.indexOf(t) });
                                             notify(`💡 置换提示：您手中的 2 张牌可以置换桌面 #${mIdx + 1} 的双重百搭！已为您高亮选中。`, "info");
                                             return;
                                         }
@@ -1354,7 +1564,7 @@
                                 for (const handTile of rack) {
                                     if (canTileSubstituteJoker(meld, t, [handTile])) {
                                         setSelectedHandTiles([handTile]);
-                                        setSelectedTableTile({ tile: t, meldIndex: mIdx });
+                                        setSelectedTableTile({ tile: t, meldIndex: mIdx, tileIndex: meld.indexOf(t) });
                                         notify(`💡 置换提示：您手中的 [${TILE_COLORS[handTile.color]?.name || ''}${handTile.value}] 可以严格等价置换桌面 #${mIdx + 1} 的百搭牌！已为您高亮选中。`, "info");
                                         return;
                                     }
@@ -1480,8 +1690,10 @@
                     return;
                 }
 
+                const sortedNewMeld = sortMeldSmart(selectedHandTiles);
+
                 if (!currentPlayer.brokenIce) {
-                    if (!isValidMeld(selectedHandTiles)) {
+                    if (!isValidMeld(sortedNewMeld)) {
                         notify("破冰首出牌组必须是合法的顺组或群组！", "error");
                         return;
                     }
@@ -1492,7 +1704,7 @@
 
                 const ids = new Set(selectedHandTiles.map(t => t.id));
                 const newRack = currentPlayer.rack.filter(t => !ids.has(t.id));
-                const newMelds = [...tableMelds, selectedHandTiles.map(t => ({ ...t, isRetrieved: false }))];
+                const newMelds = [...tableMelds, sortedNewMeld.map(t => ({ ...t, isRetrieved: false }))];
 
                 const updatedPlayers = [...players];
                 updatedPlayers[turnIndex] = { ...currentPlayer, rack: newRack };
@@ -1500,7 +1712,7 @@
                 setTableMelds(newMelds);
                 setPlayers(updatedPlayers);
                 setSelectedHandTiles([]);
-                notify("新牌组已推上桌面！若放错可点「撤销上一步」", "info");
+                notify("新牌组已推上桌面！已高亮标记", "info");
             };
 
             const appendSelectedToMeld = (meldIdx) => {
@@ -1509,7 +1721,6 @@
                         recordStepSnapshot();
                         moveTileBetweenMelds(selectedTableTile, meldIdx);
                     } else if (selectedMeldIndex !== null && selectedMeldIndex !== meldIdx) {
-                        // 牌组直觉式合并：点击牌组 A 再点击牌组 B，直接将 A 合并入 B 并智能排序！
                         recordStepSnapshot();
                         sfx.playTileClick();
                         const newMelds = [...tableMelds];
@@ -1533,10 +1744,8 @@
                 }
 
                 const currentMeld = [...tableMelds[meldIdx]];
-                // 优先尝试合规整组追加试拼
                 let nextMeld = tryInsertBatchIntoMeld(currentMeld, selectedHandTiles);
 
-                // 若因过渡状态（如牌组尚不足3张）未能触发标准顺组，则允许自由拼接并智能升序排序！
                 if (!nextMeld) {
                     nextMeld = sortMeldSmart([...currentMeld, ...selectedHandTiles]);
                 }
@@ -1556,10 +1765,9 @@
                 setTableMelds(newMelds);
                 setPlayers(updatedPlayers);
                 setSelectedHandTiles([]);
-                notify(`已拼入桌面 #${meldIdx + 1} 牌组，若放错可点「撤销上一步」`, "info");
+                notify(`已拼入桌面 #${meldIdx + 1} 牌组！已高亮标记`, "info");
             };
 
-            // 严格等价置换桌面上的百搭牌（全面支持双重百搭需要 2 张手牌等价替换）
             const substituteTableJoker = () => {
                 if (!selectedTableTile || !selectedTableTile.tile.isJoker) {
                     notify("请先在牌桌上点击选中要置换的百搭牌！", "warning");
@@ -1621,7 +1829,6 @@
                 addLog(`🔄 ${currentPlayer.name} 成功置换了桌面 #${meldIndex + 1} 牌组的百搭牌！`);
             };
 
-            // ✂️ 从当前选中的牌处切断拆分牌组
             const splitMeldAtSelectedTile = () => {
                 if (!selectedTableTile) return;
                 const { tile, meldIndex } = selectedTableTile;
@@ -1646,7 +1853,6 @@
                 addLog(`✂️ ${currentPlayer.name} 拆分了桌面 #${meldIndex + 1} 牌组`);
             };
 
-            // 📤 将当前选中的牌抽离出来作为独立牌（方便借牌与重组）
             const extractTileToNewMeld = () => {
                 if (!selectedTableTile) return;
                 const { tile, meldIndex } = selectedTableTile;
@@ -1660,14 +1866,14 @@
                 if (remainingMeld.length > 0) {
                     newMelds.splice(meldIndex, 0, remainingMeld);
                 }
-                newMelds.push([tile]); // 作为独立待组牌块放在桌面尾部
+                newMelds.push([tile]);
 
                 setTableMelds(newMelds);
                 setSelectedTableTile(null);
-                notify(`📤 已抽离牌块 [${tile.isJoker ? '百搭' : tile.value}]，可自由将其拼入其他组合！`, "info");
+                notify(`📤 已抽离牌块 [${tile.isJoker ? '百搭' : tile.value}]，可自由拼接！`, "info");
             };
 
-            const handleTableTileClick = (tile, meldIndex) => {
+            const handleTableTileClick = (tile, meldIndex, tileIndex) => {
                 sfx.playTileClick();
                 if (!currentPlayer.brokenIce) {
                     notify("未破冰玩家无法移动桌面的公共牌！", "warning");
@@ -1675,13 +1881,12 @@
                 }
 
                 if (!selectedTableTile) {
-                    setSelectedTableTile({ tile, meldIndex });
-                    notify(`已选中桌面牌 [${tile.isJoker ? '百搭牌' : tile.value}]，可点击其他牌组转移或进行置换`, "info");
+                    setSelectedTableTile({ tile, meldIndex, tileIndex });
                 } else {
                     if (selectedTableTile.tile.id === tile.id) {
                         setSelectedTableTile(null);
                     } else {
-                        setSelectedTableTile({ tile, meldIndex });
+                        setSelectedTableTile({ tile, meldIndex, tileIndex });
                     }
                 }
             };
@@ -1693,10 +1898,8 @@
                 }
                 recordStepSnapshot();
                 const newMelds = [...tableMelds];
-                // 从源牌组中移出该牌
                 const fromMeld = newMelds[source.meldIndex].filter(t => t.id !== source.tile.id);
                 
-                // 移入目标牌组，并自动进行顺组/群组智能升序排序，支持过渡组拼合！
                 const targetMeld = [...newMelds[targetMeldIdx], source.tile];
                 const sortedTargetMeld = sortMeldSmart(targetMeld);
 
@@ -1710,7 +1913,6 @@
                 notify("已将牌块移入目标牌组并自动理顺！", "info");
             };
 
-            // ⚡ 一键合并桌面零散孤立牌（将拆散的 8、9、10 等自动归拢合并为合法牌组）
             const autoMergeLooseTiles = () => {
                 if (!isHumanTurn || !currentPlayer.brokenIce) return;
                 const looseIndices = [];
@@ -1886,7 +2088,8 @@
                 }
             };
 
-            const drawTileAndEndTurn = () => {
+            // 确认摸牌并撤销本回合
+            const handleDrawTileClick = () => {
                 if (!isHumanTurn) return;
 
                 if (deck.length === 0) {
@@ -1895,15 +2098,26 @@
                     return;
                 }
 
-                const rackLenDiff = currentPlayer.rack.length !== turnSnapshot.playerRack.length;
-                if (rackLenDiff || JSON.stringify(tableMelds) !== JSON.stringify(turnSnapshot.tableMelds)) {
-                    resetCurrentTurn();
+                const playedCount = turnSnapshot ? turnSnapshot.playerRack.length - currentPlayer.rack.length : 0;
+                const isTableChanged = turnSnapshot && JSON.stringify(tableMelds) !== JSON.stringify(turnSnapshot.tableMelds);
+
+                // 如果本回合已经打出过牌或者改变过桌面牌组，弹出防误触弹窗提醒！
+                if (playedCount > 0 || isTableChanged) {
+                    setShowDrawConfirmModal(true);
+                    return;
                 }
+
+                executeDrawTile();
+            };
+
+            const executeDrawTile = () => {
+                setShowDrawConfirmModal(false);
+                resetCurrentTurn();
 
                 sfx.playDraw();
                 const newDeck = [...deck];
                 const drawn = newDeck.pop();
-                const newRack = [...currentPlayer.rack, drawn];
+                const newRack = [...turnSnapshot.playerRack, drawn];
 
                 const updatedPlayers = [...players];
                 updatedPlayers[turnIndex] = { ...currentPlayer, rack: newRack };
@@ -1912,7 +2126,7 @@
                 setPlayers(updatedPlayers);
                 addLog(`${currentPlayer.name} 摸了 1 张牌并结束回合。`);
 
-                nextTurn(turnIndex, updatedPlayers, tableMelds, newDeck);
+                nextTurn(turnIndex, updatedPlayers, turnSnapshot.tableMelds, newDeck);
             };
 
             const submitTurn = () => {
@@ -1924,7 +2138,7 @@
                 }
 
                 if (!isEntireTableValid) {
-                    notify("桌面上有不合法的牌组（每组必须≥3张且为合法顺组或群组，变色百搭后不可混色）！", "error");
+                    notify("桌面上有不合法的牌组（每组必须≥3张且为合法顺组或群组）！", "error");
                     return;
                 }
 
@@ -1967,13 +2181,18 @@
                 nextTurn(turnIndex, players, tableMelds, deck);
             };
 
+            // 全面重构的 AI 决策引擎：解决 Chief Bogo 一直摸牌不出牌的 Bug
             const runAITurn = (aiIdx, currentPlayers, currentMelds, currentDeck) => {
                 const ai = currentPlayers[aiIdx];
                 let newTableMelds = JSON.parse(JSON.stringify(currentMelds));
                 let newRack = [...ai.rack];
 
-                const findPureSets = (rack) => {
-                    const found = [];
+                // 健全的组合搜索算法：支持任意长度 3~13 的连顺，支持 3~4 张同号群组，支持百搭牌
+                const findAllCandidateMelds = (rack) => {
+                    const candidates = [];
+                    const jokers = rack.filter(t => t.isJoker && t.jokerType !== 'color_change' && t.jokerType !== 'mirror');
+
+                    // 1. 查找所有可能的群组 (3~4张)
                     const valMap = {};
                     rack.forEach(t => {
                         if (!t.isJoker) {
@@ -1982,44 +2201,97 @@
                         }
                     });
                     for (const v in valMap) {
-                        if (valMap[v].length >= 3) found.push(valMap[v].slice(0, 4));
+                        const arr = valMap[v];
+                        if (arr.length >= 3) {
+                            candidates.push(arr.slice(0, 3));
+                            if (arr.length === 4) candidates.push(arr.slice(0, 4));
+                        } else if (arr.length === 2 && jokers.length >= 1) {
+                            candidates.push([...arr, jokers[0]]);
+                        }
                     }
+
+                    // 2. 查找所有可能的顺组 (包含 4~13 张长顺子，不再提前截断！)
                     const colorMap = { black: [], blue: [], red: [], amber: [] };
                     rack.forEach(t => { if (!t.isJoker) colorMap[t.color].push(t); });
+
                     for (const c in colorMap) {
-                        const sorted = colorMap[c].sort((a,b) => a.value - b.value);
+                        const sorted = colorMap[c].sort((a, b) => a.value - b.value);
                         const unique = [];
                         sorted.forEach(t => { if (!unique.some(x => x.value === t.value)) unique.push(t); });
-                        for (let i = 0; i <= unique.length - 3; i++) {
-                            if (unique[i+1].value === unique[i].value + 1 && unique[i+2].value === unique[i].value + 2) {
-                                found.push([unique[i], unique[i+1], unique[i+2]]);
-                                break;
+
+                        // 动态滑动窗口探索所有长度 >= 3 的连续序列
+                        for (let start = 0; start < unique.length; start++) {
+                            let run = [unique[start]];
+                            for (let next = start + 1; next < unique.length; next++) {
+                                if (unique[next].value === run[run.length - 1].value + 1) {
+                                    run.push(unique[next]);
+                                    if (run.length >= 3) {
+                                        candidates.push([...run]);
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 支持利用 1 张常规百搭搭桥顺子
+                        if (jokers.length >= 1) {
+                            for (let start = 0; start < unique.length; start++) {
+                                for (let next = start + 1; next < unique.length; next++) {
+                                    const diff = unique[next].value - unique[start].value;
+                                    if (diff === 2) { // 缺1张填百搭，例如 7-百搭-9
+                                        candidates.push([unique[start], jokers[0], unique[next]]);
+                                    }
+                                }
                             }
                         }
                     }
-                    return found;
+
+                    return candidates;
                 };
 
-                // AI 破冰
-                if (!ai.brokenIce) {
-                    const sets = findPureSets(newRack);
-                    let sum = 0;
-                    let toPlay = [];
-                    for (const s of sets) {
-                        sum += getMeldPoints(s);
-                        toPlay.push(s);
-                        if (sum >= 30) break;
-                    }
+                // 从候选牌组中寻找互不重叠（每张手牌只使用一次）且点数最大化的出牌组合
+                const findDisjointMelds = (candidates) => {
+                    let bestGroup = [];
+                    let maxPoints = 0;
 
-                    if (sum >= 30) {
-                        const usedIds = new Set(toPlay.flat().map(t => t.id));
+                    const search = (idx, currentGroup, usedIds, totalPoints) => {
+                        if (totalPoints > maxPoints) {
+                            maxPoints = totalPoints;
+                            bestGroup = [...currentGroup];
+                        }
+                        for (let i = idx; i < candidates.length; i++) {
+                            const meld = candidates[i];
+                            const meldIds = meld.map(t => t.id);
+                            if (meldIds.every(id => !usedIds.has(id))) {
+                                const pts = getMeldPoints(meld);
+                                const nextUsed = new Set(usedIds);
+                                meldIds.forEach(id => nextUsed.add(id));
+                                search(i + 1, [...currentGroup, meld], nextUsed, totalPoints + pts);
+                            }
+                        }
+                    };
+
+                    search(0, [], new Set(), 0);
+                    return { melds: bestGroup, points: maxPoints };
+                };
+
+                // AI 破冰逻辑
+                if (!ai.brokenIce) {
+                    const allCandidates = findAllCandidateMelds(newRack);
+                    const solution = findDisjointMelds(allCandidates);
+
+                    if (solution.points >= 30 && solution.melds.length > 0) {
+                        const usedIds = new Set(solution.melds.flat().map(t => t.id));
                         newRack = newRack.filter(t => !usedIds.has(t.id));
-                        newTableMelds = [...newTableMelds, ...toPlay];
+                        newTableMelds = [...newTableMelds, ...solution.melds];
+
                         const updatedPlayers = [...currentPlayers];
                         updatedPlayers[aiIdx] = { ...ai, rack: newRack, brokenIce: true };
                         setPlayers(updatedPlayers);
                         setTableMelds(newTableMelds);
-                        addLog(`🤖 ${ai.name} 破冰成功！打出 ${sum} 点！`);
+                        addLog(`🎉 🤖 ${ai.name} 破冰成功！打出 ${solution.points} 点！`);
+
                         if (newRack.length === 0) {
                             handleVictory(ai);
                             return;
@@ -2029,17 +2301,21 @@
                     }
                 } else {
                     // 已破冰 AI 出新牌组
-                    const sets = findPureSets(newRack);
-                    if (sets.length > 0) {
-                        const s = sets[0];
+                    const allCandidates = findAllCandidateMelds(newRack);
+                    const solution = findDisjointMelds(allCandidates);
+
+                    if (solution.melds.length > 0) {
+                        const s = solution.melds[0];
                         const usedIds = new Set(s.map(t => t.id));
                         newRack = newRack.filter(t => !usedIds.has(t.id));
                         newTableMelds = [...newTableMelds, s];
+
                         const updatedPlayers = [...currentPlayers];
                         updatedPlayers[aiIdx] = { ...ai, rack: newRack };
                         setPlayers(updatedPlayers);
                         setTableMelds(newTableMelds);
                         addLog(`🤖 ${ai.name} 打出了新组合！`);
+
                         if (newRack.length === 0) {
                             handleVictory(ai);
                             return;
@@ -2048,7 +2324,7 @@
                         return;
                     }
 
-                    // 追加牌到桌面 (使用 tryInsertTileIntoMeld 防范混色与错位)
+                    // 追加牌到桌面已有组合
                     for (let mIdx = 0; mIdx < newTableMelds.length; mIdx++) {
                         const meld = newTableMelds[mIdx];
                         for (let rIdx = 0; rIdx < newRack.length; rIdx++) {
@@ -2062,6 +2338,7 @@
                                 setPlayers(updatedPlayers);
                                 setTableMelds(newTableMelds);
                                 addLog(`🤖 ${ai.name} 合规追加了牌块到桌面 #${mIdx + 1}！`);
+
                                 if (newRack.length === 0) {
                                     handleVictory(ai);
                                     return;
@@ -2073,7 +2350,7 @@
                     }
                 }
 
-                // AI 摸牌
+                // AI 摸牌逻辑
                 if (currentDeck.length > 0) {
                     const freshDeck = [...currentDeck];
                     const drawn = freshDeck.pop();
@@ -2116,7 +2393,7 @@
                     <div className="h-full w-full flex flex-col items-center justify-center bg-[#0d1726] text-white p-4 relative overflow-hidden felt-table safe-top-padding">
                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] bg-amber-600/10 rounded-full blur-[100px] pointer-events-none"></div>
 
-                        {/* 首页大标题：移除了多余的副标与杂质文字 */}
+                        {/* 首页大标题 */}
                         <div className="relative z-10 flex flex-col items-center mb-10 animate-float">
                             <div className="p-3.5 bg-amber-500/15 rounded-3xl border-2 border-amber-500/40 mb-5 shadow-[0_0_35px_rgba(245,158,11,0.4)]">
                                 <JokerArt type="regular" color="red" size={68} />
@@ -2126,7 +2403,7 @@
                             </h1>
                         </div>
 
-                        {/* 最下方两个入口按钮：高度严格统一 (h-14) */}
+                        {/* 入口按钮：高度严格统一 (h-14) */}
                         <div className="relative z-20 flex flex-col sm:flex-row items-center gap-4 w-full max-w-md justify-center">
                             <button 
                                 onClick={() => setShowConfig(true)}
@@ -2183,20 +2460,36 @@
                         <LogModal logs={logs} onClose={() => setShowLogModal(false)} />
                     )}
 
-                    {notification && (
-                        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 animate-pop pointer-events-none">
-                            <div className={`px-5 py-2.5 rounded-2xl shadow-2xl border text-xs sm:text-sm font-black flex items-center gap-2 backdrop-blur-md whitespace-nowrap ${
-                                notification.type === 'error' ? 'bg-rose-600/95 border-rose-400 text-white' :
-                                notification.type === 'warning' ? 'bg-amber-500/95 border-amber-300 text-slate-950' :
-                                'bg-slate-900/95 border-amber-500 text-amber-300'
-                            }`}>
-                                <Sparkles size={16} />
-                                {notification.msg}
+                    {/* 误触摸牌防呆确认弹窗 */}
+                    {showDrawConfirmModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 animate-pop safe-top-padding">
+                            <div className="bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 sm:p-7 max-w-sm w-full shadow-2xl text-center">
+                                <div className="p-3 bg-amber-500/20 text-amber-400 rounded-2xl w-fit mx-auto mb-3">
+                                    <AlertTriangle size={36} />
+                                </div>
+                                <h3 className="text-lg font-black text-white mb-2">确认摸牌并撤销出牌？</h3>
+                                <p className="text-xs text-slate-300 leading-relaxed mb-6">
+                                    检测到您本回合已打出手牌或调整了牌桌。点击摸牌将<b>撤销您本回合的所有操作并重置牌桌</b>，确定要放弃本回合摸一张牌吗？
+                                </p>
+                                <div className="flex gap-2.5">
+                                    <button
+                                        onClick={() => setShowDrawConfirmModal(false)}
+                                        className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs"
+                                    >
+                                        取消，继续出牌
+                                    </button>
+                                    <button
+                                        onClick={executeDrawTile}
+                                        className="flex-1 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-600 text-slate-950 font-black text-xs shadow"
+                                    >
+                                        确定撤销并摸牌
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
 
-                    {/* 顶栏：单行排列，豪华版小标移至大标题下方 */}
+                    {/* 顶栏：单行排列，豪华版小标在主标题下方 */}
                     <div className="h-14 py-1.5 bg-slate-900/95 border-b border-slate-800 px-3 sm:px-4 flex items-center justify-between z-30 shrink-0 shadow-lg gap-2 overflow-x-auto custom-scrollbar">
                         <div className="flex items-center gap-2 shrink-0">
                             <div className="p-1 bg-amber-500/10 rounded-lg border border-amber-500/30 flex items-center justify-center shrink-0">
@@ -2284,9 +2577,11 @@
                         </div>
                     </div>
 
+                    {/* 牌桌主体 */}
                     <div className="flex-1 flex overflow-hidden min-h-0 relative felt-table">
-                        <div className="flex-1 flex flex-col p-3 sm:p-4 overflow-y-auto custom-scrollbar">
-                            <div className="flex items-center justify-between mb-2 px-1">
+                        <div className="flex-1 flex flex-col p-3 sm:p-4 overflow-hidden relative">
+                            {/* 公共牌桌标题行 & 居中操作区 */}
+                            <div className="flex items-center justify-between mb-2.5 px-1 relative min-h-[32px] shrink-0">
                                 <div className="flex items-center gap-2">
                                     <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1 whitespace-nowrap">
                                         <Layers size={14} className="text-amber-400" />
@@ -2294,14 +2589,16 @@
                                     </span>
                                     {!isEntireTableValid && (
                                         <span className="text-xs font-bold text-rose-400 bg-rose-950/80 px-2.5 py-0.5 rounded-full border border-rose-500/50 animate-pulse whitespace-nowrap">
-                                            ⚠️ 桌面存在未凑齐3张或不合法的组合
+                                            ⚠️ 桌面存在不合法组合
                                         </span>
                                     )}
-                                    {/* 存在散牌或未成型组时，显示一键合并按钮 */}
+                                </div>
+
+                                <div className="flex items-center gap-2">
                                     {currentPlayer?.brokenIce && tableMelds.some(m => m.length < 3 || !isValidMeld(m)) && (
                                         <button
                                             onClick={autoMergeLooseTiles}
-                                            className="px-2.5 py-0.5 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 rounded-full font-black text-xs shadow-md active:scale-95 transition-all flex items-center gap-1 animate-pulse border border-yellow-300 whitespace-nowrap"
+                                            className="px-2.5 py-1 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 rounded-full font-black text-xs shadow-md active:scale-95 transition-all flex items-center gap-1 animate-pulse border border-yellow-300 whitespace-nowrap"
                                             title="自动将桌面零散牌块合并为连号顺组或群组"
                                         >
                                             <Sparkles size={12} />
@@ -2309,105 +2606,64 @@
                                         </button>
                                     )}
                                 </div>
+                            </div>
 
-                                {selectedTableTile && (
-                                    <div className="flex items-center gap-1.5 bg-slate-900/90 px-3 py-1 rounded-xl border border-amber-500 animate-pop whitespace-nowrap overflow-x-auto custom-scrollbar">
-                                        <span className="text-xs text-amber-300 font-bold mr-1">
-                                            已选牌 [{selectedTableTile.tile.isJoker ? '百搭牌' : selectedTableTile.tile.value}]
-                                        </span>
+                            {/* 居中固定提示条（使用全宽 flex 容器确保 100% 绝对水平居中，避免任何动画 transform 冲突） */}
+                            {notification && (
+                                <div className="fixed top-16 left-0 right-0 z-50 flex justify-center pointer-events-none px-4">
+                                    <div 
+                                        onClick={() => setNotification(null)}
+                                        className={`pointer-events-auto cursor-pointer animate-pop max-w-[92vw] sm:max-w-2xl px-5 py-2.5 rounded-2xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] border-2 text-xs sm:text-sm font-black flex items-center justify-center gap-2.5 backdrop-blur-md text-center leading-snug transition-all active:scale-95 ${
+                                            notification.type === 'error' ? 'bg-rose-950/95 border-rose-500 text-rose-200' :
+                                            notification.type === 'warning' ? 'bg-amber-950/95 border-amber-400 text-amber-200 shadow-amber-950/50' :
+                                            'bg-slate-900/95 border-amber-400 text-amber-300 shadow-black/80'
+                                        }`}
+                                    >
+                                        <Sparkles size={16} className="shrink-0 text-amber-400" />
+                                        <span className="text-center">{notification.msg}</span>
+                                        <span className="ml-1 text-xs opacity-60 hover:opacity-100 shrink-0">✕</span>
+                                    </div>
+                                </div>
+                            )}
 
-                                        {/* ✂️ 拆分按钮 */}
-                                        {tableMelds[selectedTableTile.meldIndex]?.length >= 2 && 
-                                         tableMelds[selectedTableTile.meldIndex].findIndex(t => t.id === selectedTableTile.tile.id) > 0 && (
-                                            <button
-                                                onClick={splitMeldAtSelectedTile}
-                                                className="px-2.5 py-0.5 rounded text-xs font-black bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1 shadow transition-all"
-                                                title="从当前选中的这张牌处切断，拆成两组"
-                                            >
-                                                <span>✂️ 从此拆分</span>
-                                            </button>
-                                        )}
-
-                                        {/* 📤 抽离此牌按钮 */}
-                                        {tableMelds[selectedTableTile.meldIndex]?.length > 1 && (
-                                            <button
-                                                onClick={extractTileToNewMeld}
-                                                className="px-2 py-0.5 rounded text-xs font-bold bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 flex items-center gap-1"
-                                                title="把这张牌单独抽出来，方便拿去拼其他牌"
-                                            >
-                                                <span>📤 抽离此牌</span>
-                                            </button>
-                                        )}
-
-                                        {/* ⭐ 严格等价置换按钮 */}
-                                        {isJokerSelectedOnTable && (
-                                            <button
-                                                onClick={substituteTableJoker}
-                                                disabled={!canCurrentJokerBeSubstituted}
-                                                className={`px-2.5 py-0.5 rounded text-xs font-black flex items-center gap-1 shadow transition-all ${
-                                                    canCurrentJokerBeSubstituted
-                                                        ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 hover:bg-amber-400 animate-bounce'
-                                                        : 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                                                }`}
-                                                title={
-                                                    canCurrentJokerBeSubstituted 
-                                                        ? "点击置换" 
-                                                        : selectedTableTile.tile.jokerType === 'double'
-                                                            ? "置换双重百搭需要同时选中 2 张对应的手牌！"
-                                                            : "手牌必须严格匹配此百搭代表的颜色与数值！"
-                                                }
-                                            >
-                                                <RefreshCw size={12} />
-                                                <span>
-                                                    {canCurrentJokerBeSubstituted 
-                                                        ? (selectedTableTile.tile.jokerType === 'double' ? '置换双重百搭 (2张)' : '严格等价置换')
-                                                        : (selectedTableTile.tile.jokerType === 'double' ? '需选2张对应手牌' : '颜色/数值不符')}
-                                                </span>
-                                            </button>
-                                        )}
-
-                                        <button
-                                            onClick={takeBackToHand}
-                                            className="px-2 py-0.5 bg-slate-800 text-slate-200 border border-slate-600 rounded text-xs font-bold hover:bg-slate-700"
-                                        >
-                                            撤回手牌
-                                        </button>
-                                        <button
-                                            onClick={() => setSelectedTableTile(null)}
-                                            className="text-xs text-slate-400 hover:text-white ml-1"
-                                        >
-                                            取消
-                                        </button>
+                            {/* 牌桌虚线区域：对局全程完整保留虚线外框（满足图二需求） */}
+                            <div className="flex-1 border-2 border-dashed border-slate-700/60 rounded-3xl p-3 sm:p-4 overflow-y-auto custom-scrollbar flex flex-col relative bg-slate-950/20 backdrop-blur-[2px]">
+                                {tableMelds.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 py-8">
+                                        <JokerArt type="regular" color="red" size={56} />
+                                        <p className="mt-3 text-base font-bold text-slate-300">公共牌桌暂无牌组</p>
+                                        <p className="text-xs text-slate-400 mt-1 max-w-md">
+                                            从下方双排牌架选择顺组或群组，点击右侧「作为新牌组打出」！首次出牌点数需 ≥ 30 点破冰。可随时点击「出牌提示」获取指导！
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-wrap content-start gap-3 sm:gap-4 pb-12">
+                                        {tableMelds.map((meld, idx) => (
+                                            <TableMeldGroup
+                                                key={`meld_${idx}`}
+                                                meld={meld}
+                                                index={idx}
+                                                isSelected={selectedMeldIndex === idx}
+                                                selectedTileInfo={selectedTableTile}
+                                                initialTableTileIds={initialTableTileIds}
+                                                onClick={() => appendSelectedToMeld(idx)}
+                                                onTileClick={handleTableTileClick}
+                                                onMoveInside={moveTileInsideMeld}
+                                                onSplit={splitMeldAtSelectedTile}
+                                                onExtract={extractTileToNewMeld}
+                                                onSubstitute={substituteTableJoker}
+                                                onTakeBack={takeBackToHand}
+                                                onDeselectTile={() => setSelectedTableTile(null)}
+                                                canSubstitute={canCurrentJokerBeSubstituted}
+                                            />
+                                        ))}
                                     </div>
                                 )}
                             </div>
-
-                            {tableMelds.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-700/60 rounded-3xl p-6 text-center text-slate-500">
-                                    <JokerArt type="regular" color="red" size={56} />
-                                    <p className="mt-3 text-base font-bold text-slate-300">公共牌桌暂无牌组</p>
-                                    <p className="text-xs text-slate-400 mt-1 max-w-md">
-                                        从下方双排牌架选择顺组或群组，点击右侧「作为新牌组打出」！首次出牌点数需 ≥ 30 点破冰。可随时点击「出牌提示」获取指导！
-                                    </p>
-                                </div>
-                            ) : (
-                                <div className="flex flex-wrap content-start gap-3 pb-8">
-                                    {tableMelds.map((meld, idx) => (
-                                        <TableMeldGroup
-                                            key={`meld_${idx}`}
-                                            meld={meld}
-                                            index={idx}
-                                            isSelected={selectedMeldIndex === idx}
-                                            selectedTileId={selectedTableTile?.tile?.id}
-                                            onClick={() => appendSelectedToMeld(idx)}
-                                            onTileClick={handleTableTileClick}
-                                        />
-                                    ))}
-                                </div>
-                            )}
                         </div>
                     </div>
 
+                    {/* 底部木质牌架 */}
                     <div className="h-60 sm:h-64 wood-rack flex flex-col p-2.5 z-40 shrink-0 shadow-2xl">
                         <div className="flex items-center justify-between px-2 mb-1.5 overflow-x-auto custom-scrollbar">
                             <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
@@ -2520,42 +2776,20 @@
                                 </div>
                             </div>
 
-                            {/* 出牌确认 / 严格置换 / 摸牌列 */}
+                            {/* 出牌确认 / 摸牌放弃 */}
                             <div className="w-40 sm:w-48 flex flex-col justify-between gap-1.5 shrink-0 pl-2 border-l border-amber-900/40">
-                                {isJokerSelectedOnTable && (
-                                    (selectedTableTile.tile.jokerType === 'double' && selectedHandTiles.length === 2) ||
-                                    (selectedTableTile.tile.jokerType !== 'double' && selectedHandTiles.length === 1)
-                                ) ? (
-                                    <button
-                                        onClick={substituteTableJoker}
-                                        disabled={!isHumanTurn || !canCurrentJokerBeSubstituted}
-                                        className={`flex-1 font-black rounded-xl text-xs sm:text-sm shadow-md active:scale-95 transition-all flex items-center justify-center gap-1 text-center p-1 whitespace-nowrap ${
-                                            canCurrentJokerBeSubstituted
-                                                ? 'bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 animate-bounce'
-                                                : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
-                                        }`}
-                                    >
-                                        <RefreshCw size={15} />
-                                        <span>
-                                            {canCurrentJokerBeSubstituted 
-                                                ? (selectedTableTile.tile.jokerType === 'double' ? '置换双重百搭 (2张)' : '严格等价置换')
-                                                : '置换条件不符'}
-                                        </span>
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={playSelectedAsNewMeld}
-                                        disabled={!isHumanTurn || selectedHandTiles.length === 0}
-                                        className="flex-1 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-slate-950 font-black rounded-xl text-xs sm:text-sm shadow-md active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-1 text-center p-1 whitespace-nowrap"
-                                    >
-                                        <PlusCircle size={15} />
-                                        <span>作为新牌组打出 ({selectedHandTiles.length})</span>
-                                    </button>
-                                )}
+                                <button
+                                    onClick={playSelectedAsNewMeld}
+                                    disabled={!isHumanTurn || selectedHandTiles.length === 0}
+                                    className="flex-1 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-slate-950 font-black rounded-xl text-xs sm:text-sm shadow-md active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-1 text-center p-1 whitespace-nowrap"
+                                >
+                                    <PlusCircle size={15} />
+                                    <span>作为新牌组打出 ({selectedHandTiles.length})</span>
+                                </button>
 
                                 <div className="flex gap-1.5 flex-1">
                                     <button
-                                        onClick={drawTileAndEndTurn}
+                                        onClick={handleDrawTileClick}
                                         disabled={!isHumanTurn}
                                         className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-bold active:scale-95 transition-all disabled:opacity-40 flex flex-col items-center justify-center gap-0.5 whitespace-nowrap"
                                     >
@@ -2575,6 +2809,7 @@
                         </div>
                     </div>
 
+                    {/* 胜局结算 */}
                     {gameState === 'end' && (
                         <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-md safe-top-padding">
                             <div className="bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center shadow-[0_0_80px_rgba(245,158,11,0.35)] animate-pop">

@@ -2584,7 +2584,7 @@
                         <div className="flex-1 flex flex-col p-3 sm:p-4 overflow-hidden relative">
                             {/* 公共牌桌标题行 & 居中操作区 */}
                             <div className="flex items-center justify-between mb-2.5 px-1 relative min-h-[32px] shrink-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 z-10">
                                     <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1 whitespace-nowrap">
                                         <Layers size={14} className="text-amber-400" />
                                         公共牌桌 ({tableMelds.length} 组)
@@ -2596,7 +2596,25 @@
                                     )}
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                {/* 居中固定提示条（与“公共牌桌”在同一行，水平垂直完美居中，不再遮挡上栏） */}
+                                {notification && (
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20 px-2">
+                                        <div 
+                                            onClick={() => setNotification(null)}
+                                            className={`pointer-events-auto cursor-pointer animate-pop max-w-[85vw] md:max-w-[70vw] px-3.5 py-1 rounded-full shadow-[0_4px_16px_rgba(0,0,0,0.5)] border text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1.5 backdrop-blur-md whitespace-nowrap leading-none transition-all active:scale-95 ${
+                                                notification.type === 'error' ? 'bg-rose-950/95 border-rose-500/80 text-rose-200' :
+                                                notification.type === 'warning' ? 'bg-amber-950/95 border-amber-400/80 text-amber-200 shadow-amber-950/50' :
+                                                'bg-slate-900/95 border-amber-400/80 text-amber-300 shadow-black/80'
+                                            }`}
+                                        >
+                                            <Sparkles size={13} className="shrink-0 text-amber-400" />
+                                            <span className="whitespace-nowrap">{notification.msg}</span>
+                                            <span className="ml-1 text-[10px] text-slate-400 hover:text-white shrink-0">✕</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex items-center gap-2 z-10">
                                     {currentPlayer?.brokenIce && tableMelds.some(m => m.length < 3 || !isValidMeld(m)) && (
                                         <button
                                             onClick={autoMergeLooseTiles}
@@ -2609,24 +2627,6 @@
                                     )}
                                 </div>
                             </div>
-
-                            {/* 居中固定提示条（单行自适应紧凑显示，绝不折行遮挡） */}
-                            {notification && (
-                                <div className="fixed top-[62px] inset-x-0 z-50 flex justify-center pointer-events-none px-4">
-                                    <div 
-                                        onClick={() => setNotification(null)}
-                                        className={`pointer-events-auto cursor-pointer animate-pop max-w-[96vw] px-3.5 py-1 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.6)] border text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1.5 backdrop-blur-md whitespace-nowrap leading-none transition-all active:scale-95 ${
-                                            notification.type === 'error' ? 'bg-rose-950/95 border-rose-500/80 text-rose-200' :
-                                            notification.type === 'warning' ? 'bg-amber-950/95 border-amber-400/80 text-amber-200 shadow-amber-950/50' :
-                                            'bg-slate-900/95 border-amber-400/80 text-amber-300 shadow-black/80'
-                                        }`}
-                                    >
-                                        <Sparkles size={13} className="shrink-0 text-amber-400" />
-                                        <span className="whitespace-nowrap">{notification.msg}</span>
-                                        <span className="ml-1 text-[10px] text-slate-400 hover:text-white shrink-0">✕</span>
-                                    </div>
-                                </div>
-                            )}
 
                             {/* 牌桌虚线区域：对局全程完整保留虚线外框 */}
                             <div className="flex-1 border-2 border-dashed border-slate-700/60 rounded-3xl p-3 sm:p-4 overflow-y-auto custom-scrollbar flex flex-col relative bg-slate-950/20 backdrop-blur-[2px]">

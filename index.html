@@ -766,6 +766,8 @@
                 <div 
                     onClick={onClick}
                     className={`relative p-2 rounded-2xl transition-all duration-200 border-2 ${
+                        isSelectedMeldHavingSelectedTile ? 'z-30 ' : ''
+                    }${
                         isSelected 
                             ? 'border-amber-400 bg-amber-500/15 shadow-[0_0_20px_rgba(245,158,11,0.25)]' 
                             : valid 
@@ -2608,25 +2610,25 @@
                                 </div>
                             </div>
 
-                            {/* 居中固定提示条（使用全宽 flex 容器确保 100% 绝对水平居中，避免任何动画 transform 冲突） */}
+                            {/* 居中固定提示条（单行自适应紧凑显示，绝不折行遮挡） */}
                             {notification && (
-                                <div className="fixed top-16 left-0 right-0 z-50 flex justify-center pointer-events-none px-4">
+                                <div className="fixed top-[62px] inset-x-0 z-50 flex justify-center pointer-events-none px-4">
                                     <div 
                                         onClick={() => setNotification(null)}
-                                        className={`pointer-events-auto cursor-pointer animate-pop max-w-[92vw] sm:max-w-2xl px-5 py-2.5 rounded-2xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] border-2 text-xs sm:text-sm font-black flex items-center justify-center gap-2.5 backdrop-blur-md text-center leading-snug transition-all active:scale-95 ${
-                                            notification.type === 'error' ? 'bg-rose-950/95 border-rose-500 text-rose-200' :
-                                            notification.type === 'warning' ? 'bg-amber-950/95 border-amber-400 text-amber-200 shadow-amber-950/50' :
-                                            'bg-slate-900/95 border-amber-400 text-amber-300 shadow-black/80'
+                                        className={`pointer-events-auto cursor-pointer animate-pop max-w-[96vw] px-3.5 py-1 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.6)] border text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1.5 backdrop-blur-md whitespace-nowrap leading-none transition-all active:scale-95 ${
+                                            notification.type === 'error' ? 'bg-rose-950/95 border-rose-500/80 text-rose-200' :
+                                            notification.type === 'warning' ? 'bg-amber-950/95 border-amber-400/80 text-amber-200 shadow-amber-950/50' :
+                                            'bg-slate-900/95 border-amber-400/80 text-amber-300 shadow-black/80'
                                         }`}
                                     >
-                                        <Sparkles size={16} className="shrink-0 text-amber-400" />
-                                        <span className="text-center">{notification.msg}</span>
-                                        <span className="ml-1 text-xs opacity-60 hover:opacity-100 shrink-0">✕</span>
+                                        <Sparkles size={13} className="shrink-0 text-amber-400" />
+                                        <span className="whitespace-nowrap">{notification.msg}</span>
+                                        <span className="ml-1 text-[10px] text-slate-400 hover:text-white shrink-0">✕</span>
                                     </div>
                                 </div>
                             )}
 
-                            {/* 牌桌虚线区域：对局全程完整保留虚线外框（满足图二需求） */}
+                            {/* 牌桌虚线区域：对局全程完整保留虚线外框 */}
                             <div className="flex-1 border-2 border-dashed border-slate-700/60 rounded-3xl p-3 sm:p-4 overflow-y-auto custom-scrollbar flex flex-col relative bg-slate-950/20 backdrop-blur-[2px]">
                                 {tableMelds.length === 0 ? (
                                     <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 py-8">
@@ -2637,7 +2639,7 @@
                                         </p>
                                     </div>
                                 ) : (
-                                    <div className="flex flex-wrap content-start gap-3 sm:gap-4 pb-12">
+                                    <div className="flex flex-wrap content-start gap-3 sm:gap-4 pt-14 pb-14">
                                         {tableMelds.map((meld, idx) => (
                                             <TableMeldGroup
                                                 key={`meld_${idx}`}

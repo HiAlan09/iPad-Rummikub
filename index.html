@@ -699,6 +699,308 @@
             return isValidMeld(replacedMeld);
         };
 
+        // 全能候选牌组穷举器：支持副本牌、4种百搭牌全位置填补、双重百搭等
+        const findAllCandidateMelds = (rack) => {
+            if (!rack || rack.length < 3) return [];
+            const candidates = [];
+            const seenSignatures = new Set();
+
+            const addCandidate = (tiles) => {
+                if (!tiles || tiles.length < 3) return;
+                if (!isValidMeld(tiles)) return;
+                const pts = getMeldPoints(tiles);
+                if (pts <= 0) return;
+                const sig = tiles.map(t => t.id).sort().join('|');
+                if (!seenSignatures.has(sig)) {
+                    seenSignatures.add(sig);
+                    candidates.push(tiles);
+                }
+            };
+
+            const normalTiles = rack.filter(t => !t.isJoker);
+            const regularJokers = rack.filter(t => t.isJoker && t.jokerType === 'regular');
+            const doubleJokers = rack.filter(t => t.isJoker && t.jokerType === 'double');
+            const colorChangeJokers = rack.filter(t => t.isJoker && t.jokerType === 'color_change');
+            const mirrorJokers = rack.filter(t => t.isJoker && t.jokerType === 'mirror');
+
+            // 1. 群组 (Groups): 同数字、不同颜色
+            const valTiles = {};
+            for (let v = 1; v <= 13; v++) valTiles[v] = { black: [], blue: [], red: [], amber: [] };
+            normalTiles.forEach(t => {
+                if (valTiles[t.value] && valTiles[t.value][t.color]) {
+                    valTiles[t.value][t.color].push(t);
+                }
+            });
+
+            const colorsList = ['black', 'blue', 'red', 'amber'];
+
+            for (let v = 1; v <= 13; v++) {
+                const availableColors = colorsList.filter(c => valTiles[v][c].length > 0);
+
+                // 1a. 纯数字 3 色群组
+                if (availableColors.length >= 3) {
+                    const colorCombos3 = [];
+                    for (let i = 0; i < availableColors.length; i++) {
+                        for (let j = i + 1; j < availableColors.length; j++) {
+                            for (let k = j + 1; k < availableColors.length; k++) {
+                                colorCombos3.push([availableColors[i], availableColors[j], availableColors[k]]);
+                            }
+                        }
+                    }
+                    colorCombos3.forEach(([c1, c2, c3]) => {
+                        valTiles[v][c1].forEach(t1 => {
+                            valTiles[v][c2].forEach(t2 => {
+                                valTiles[v][c3].forEach(t3 => {
+                                    addCandidate([t1, t2, t3]);
+                                    if (regularJokers.length >= 1) {
+                                        addCandidate([t1, t2, t3, regularJokers[0]]);
+                                    }
+                                });
+                            });
+                        });
+                    });
+                }
+
+                // 1b. 纯数字 4 色群组
+                if (availableColors.length === 4) {
+                    valTiles[v]['black'].forEach(t1 => {
+                        valTiles[v]['blue'].forEach(t2 => {
+                            valTiles[v]['red'].forEach(t3 => {
+                                valTiles[v]['amber'].forEach(t4 => {
+                                    addCandidate([t1, t2, t3, t4]);
+                                });
+                            });
+                        });
+                    });
+                }
+
+                // 1c. 2 颜色 + 1~2 张百搭牌
+                if (availableColors.length >= 2 && regularJokers.length >= 1) {
+                    for (let i = 0; i < availableColors.length; i++) {
+                        for (let j = i + 1; j < availableColors.length; j++) {
+                            const c1 = availableColors[i];
+                            const c2 = availableColors[j];
+                            valTiles[v][c1].forEach(t1 => {
+                                valTiles[v][c2].forEach(t2 => {
+                                    addCandidate([t1, t2, regularJokers[0]]);
+                                    if (regularJokers.length >= 2) {
+                                        addCandidate([t1, t2, regularJokers[0], regularJokers[1]]);
+                                    }
+                                    if (doubleJokers.length >= 1) {
+                                        addCandidate([t1, t2, doubleJokers[0]]);
+                                    }
+                                });
+                            });
+                        }
+                    }
+                }
+
+                // 1d. 1 颜色 + 双重百搭 (例如 红10 + 双重百搭 = 3张10)
+                if (availableColors.length >= 1 && doubleJokers.length >= 1) {
+                    availableColors.forEach(c => {
+                        valTiles[v][c].forEach(t => {
+                            addCandidate([t, doubleJokers[0]]);
+                        });
+                    });
+                }
+
+                // 1e. 镜像百搭群组: 同色同数对称
+                if (mirrorJokers.length >= 1) {
+                    availableColors.forEach(c => {
+                        if (valTiles[v][c].length >= 2) {
+                            addCandidate([valTiles[v][c][0], mirrorJokers[0], valTiles[v][c][1]]);
+                        }
+                    });
+                }
+            }
+
+            // 2. 顺组 (Runs): 同颜色、连续数字
+            for (const color of colorsList) {
+                const colorTilesByVal = {};
+                for (let v = 1; v <= 13; v++) colorTilesByVal[v] = [];
+                normalTiles.filter(t => t.color === color).forEach(t => {
+                    colorTilesByVal[t.value].push(t);
+                });
+
+                // 2a. 纯数字连续顺组 (滑动窗口支持所有副本分支)
+                for (let start = 1; start <= 11; start++) {
+                    if (colorTilesByVal[start].length === 0) continue;
+                    const buildPureRuns = (currVal, currentTiles) => {
+                        if (currentTiles.length >= 3) {
+                            addCandidate([...currentTiles]);
+                        }
+                        if (currVal <= 13 && colorTilesByVal[currVal] && colorTilesByVal[currVal].length > 0) {
+                            colorTilesByVal[currVal].forEach(nextTile => {
+                                buildPureRuns(currVal + 1, [...currentTiles, nextTile]);
+                            });
+                        }
+                    };
+
+                    colorTilesByVal[start].forEach(startTile => {
+                        buildPureRuns(start + 1, [startTile]);
+                    });
+                }
+
+                // 2b. 含有 1 张常规百搭的顺组 (支持头、中、尾全位置填补)
+                if (regularJokers.length >= 1) {
+                    const rJoker = regularJokers[0];
+                    for (let len = 3; len <= 5; len++) {
+                        for (let start = 1; start <= 14 - len; start++) {
+                            const targetValues = [];
+                            for (let v = start; v < start + len; v++) targetValues.push(v);
+
+                            for (let jokerPos = 0; jokerPos < len; jokerPos++) {
+                                let canForm = true;
+                                const tileOptions = [];
+                                for (let p = 0; p < len; p++) {
+                                    if (p === jokerPos) {
+                                        tileOptions.push([rJoker]);
+                                    } else {
+                                        const val = targetValues[p];
+                                        if (colorTilesByVal[val].length === 0) {
+                                            canForm = false;
+                                            break;
+                                        }
+                                        tileOptions.push(colorTilesByVal[val]);
+                                    }
+                                }
+
+                                if (canForm) {
+                                    const gen = (pos, current) => {
+                                        if (pos === len) {
+                                            addCandidate(current);
+                                            return;
+                                        }
+                                        tileOptions[pos].forEach(t => gen(pos + 1, [...current, t]));
+                                    };
+                                    gen(0, []);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2c. 含有双重百搭的顺组 (代表 2 个连续数位)
+                if (doubleJokers.length >= 1) {
+                    const dJoker = doubleJokers[0];
+                    for (let v = 1; v <= 13; v++) {
+                        if (colorTilesByVal[v].length > 0) {
+                            colorTilesByVal[v].forEach(t => {
+                                if (v >= 3) addCandidate([dJoker, t]);
+                                if (v <= 11) addCandidate([t, dJoker]);
+                            });
+                        }
+                    }
+                    for (let start = 1; start <= 10; start++) {
+                        if (colorTilesByVal[start].length > 0 && colorTilesByVal[start + 3] && colorTilesByVal[start + 3].length > 0) {
+                            colorTilesByVal[start].forEach(t1 => {
+                                colorTilesByVal[start + 3].forEach(t2 => {
+                                    addCandidate([t1, dJoker, t2]);
+                                });
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 3. 变色百搭顺组 (Color Change Joker)
+            if (colorChangeJokers.length >= 1) {
+                const cJoker = colorChangeJokers[0];
+                for (let start = 1; start <= 9; start++) {
+                    for (const colA of colorsList) {
+                        const tilesA1 = normalTiles.filter(t => t.color === colA && t.value === start);
+                        const tilesA2 = normalTiles.filter(t => t.color === colA && t.value === start + 1);
+                        if (tilesA1.length === 0 || tilesA2.length === 0) continue;
+
+                        for (const colB of colorsList) {
+                            if (colB === colA) continue;
+                            const tilesB1 = normalTiles.filter(t => t.color === colB && t.value === start + 3);
+                            const tilesB2 = normalTiles.filter(t => t.color === colB && t.value === start + 4);
+                            if (tilesB1.length === 0 || tilesB2.length === 0) continue;
+
+                            tilesA1.forEach(a1 => {
+                                tilesA2.forEach(a2 => {
+                                    tilesB1.forEach(b1 => {
+                                        tilesB2.forEach(b2 => {
+                                            addCandidate([a1, a2, cJoker, b1, b2]);
+                                        });
+                                    });
+                                });
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 4. 镜像百搭对称顺组 (Mirror Joker)
+            if (mirrorJokers.length >= 1) {
+                const mJoker = mirrorJokers[0];
+                for (const col of colorsList) {
+                    for (let v = 1; v <= 12; v++) {
+                        const tA = normalTiles.filter(t => t.color === col && t.value === v);
+                        const tB = normalTiles.filter(t => t.color === col && t.value === v + 1);
+                        if (tA.length >= 2 && tB.length >= 2) {
+                            addCandidate([tA[0], tB[0], mJoker, tB[1], tA[1]]);
+                        }
+                    }
+                }
+            }
+
+            return candidates;
+        };
+
+        // 从候选牌组中寻找互不重叠且点数最大化的出牌组合（带快速达标剪枝，绝不卡死）
+        const findDisjointMelds = (candidates, targetPoints = 0) => {
+            if (!candidates || candidates.length === 0) return { melds: [], points: 0 };
+
+            const sorted = [...candidates].sort((a, b) => getMeldPoints(b) - getMeldPoints(a));
+
+            let bestGroup = [];
+            let maxPoints = 0;
+            let stepCount = 0;
+            const MAX_STEPS = 2500;
+
+            const search = (idx, currentGroup, usedIds, totalPoints) => {
+                if (totalPoints > maxPoints) {
+                    maxPoints = totalPoints;
+                    bestGroup = [...currentGroup];
+                }
+
+                if (targetPoints > 0 && maxPoints >= targetPoints) {
+                    return;
+                }
+
+                stepCount++;
+                if (stepCount > MAX_STEPS) return;
+
+                for (let i = idx; i < sorted.length; i++) {
+                    if (targetPoints > 0 && maxPoints >= targetPoints) return;
+                    if (stepCount > MAX_STEPS) return;
+
+                    const meld = sorted[i];
+                    const meldIds = meld.map(t => t.id);
+
+                    let canUse = true;
+                    for (let k = 0; k < meldIds.length; k++) {
+                        if (usedIds.has(meldIds[k])) {
+                            canUse = false;
+                            break;
+                        }
+                    }
+
+                    if (canUse) {
+                        const pts = getMeldPoints(meld);
+                        const nextUsed = new Set(usedIds);
+                        meldIds.forEach(id => nextUsed.add(id));
+                        search(i + 1, [...currentGroup, meld], nextUsed, totalPoints + pts);
+                    }
+                }
+            };
+
+            search(0, [], new Set(), 0);
+            return { melds: bestGroup, points: maxPoints };
+        };
+
         const Tile = ({ tile, isSelected, onClick, size = "md", customClass = "", isNewlyPlayed = false }) => {
             const colorConfig = TILE_COLORS[tile.color] || TILE_COLORS.black;
             
@@ -1442,93 +1744,28 @@
                 sfx.playHint();
 
                 const rack = [...currentPlayer.rack];
-
-                const findPureMelds = (tiles) => {
-                    const melds = [];
-                    // 找群组
-                    const valMap = {};
-                    tiles.forEach(t => {
-                        if (!t.isJoker) {
-                            if (!valMap[t.value]) valMap[t.value] = [];
-                            if (!valMap[t.value].some(x => x.color === t.color)) valMap[t.value].push(t);
-                        }
-                    });
-                    for (const v in valMap) {
-                        if (valMap[v].length >= 3) {
-                            melds.push(valMap[v].slice(0, 3));
-                            if (valMap[v].length === 4) melds.push(valMap[v].slice(0, 4));
-                        }
-                    }
-
-                    // 找顺组
-                    const colorMap = { black: [], blue: [], red: [], amber: [] };
-                    tiles.forEach(t => { if (!t.isJoker) colorMap[t.color].push(t); });
-                    for (const c in colorMap) {
-                        const sorted = colorMap[c].sort((a, b) => a.value - b.value);
-                        const unique = [];
-                        sorted.forEach(t => {
-                            if (!unique.some(x => x.value === t.value)) unique.push(t);
-                        });
-                        for (let i = 0; i <= unique.length - 3; i++) {
-                            if (unique[i+1].value === unique[i].value + 1 && unique[i+2].value === unique[i].value + 2) {
-                                const run = [unique[i], unique[i+1], unique[i+2]];
-                                melds.push(run);
-                                let nextIdx = i + 3;
-                                while (nextIdx < unique.length && unique[nextIdx].value === unique[nextIdx-1].value + 1) {
-                                    run.push(unique[nextIdx]);
-                                    melds.push([...run]);
-                                    nextIdx++;
-                                }
-                            }
-                        }
-                    }
-                    return melds;
-                };
+                const allCandidates = findAllCandidateMelds(rack);
 
                 // 1. 未破冰情况的提示 (需凑足 ≥ 30 点纯手牌组合)
                 if (!currentPlayer.brokenIce) {
-                    const candidateMelds = findPureMelds(rack);
-
-                    for (const m of candidateMelds) {
-                        const pts = getMeldPoints(m);
-                        if (pts >= 30) {
-                            setSelectedHandTiles(m);
-                            notify(`💡 破冰提示：已为您自动选中 [${m.map(t => t.value).join(', ')}]，共 ${pts} 点 (≥30点)！点击右侧「作为新牌组打出」即可破冰！`, "info");
-                            return;
-                        }
+                    const solution = findDisjointMelds(allCandidates, 30);
+                    if (solution.points >= 30 && solution.melds.length > 0) {
+                        const flatTiles = solution.melds.flat();
+                        setSelectedHandTiles(flatTiles);
+                        notify(`💡 破冰提示：已为您自动选中 ${solution.melds.length} 套组合，共 ${solution.points} 点 (≥30点)！点击右侧「作为新牌组打出」即可破冰！`, "info");
+                        return;
                     }
 
-                    for (let i = 0; i < candidateMelds.length; i++) {
-                        for (let j = i + 1; j < candidateMelds.length; j++) {
-                            const setA = candidateMelds[i];
-                            const setB = candidateMelds[j];
-                            const usedIds = new Set(setA.map(t => t.id));
-                            if (setB.every(t => !usedIds.has(t.id))) {
-                                const totalPts = getMeldPoints(setA) + getMeldPoints(setB);
-                                if (totalPts >= 30) {
-                                    setSelectedHandTiles([...setA, ...setB]);
-                                    notify(`💡 破冰提示：两套组合共 ${totalPts} 点已为您选中！点击右侧「作为新牌组打出」完成破冰！`, "info");
-                                    return;
-                                }
-                            }
-                        }
-                    }
-
-                    let maxPts = 0;
-                    candidateMelds.forEach(m => {
-                        const p = getMeldPoints(m);
-                        if (p > maxPts) maxPts = p;
-                    });
-                    notify(`💡 破冰提示：当前手牌最高组合点数仅为 ${maxPts} 点 (需 ≥ 30 点)，暂无法合规破冰，建议点击「摸牌放弃」。`, "warning");
+                    const bestTry = findDisjointMelds(allCandidates, 0);
+                    notify(`💡 破冰提示：当前手牌最高组合点数仅为 ${bestTry.points} 点 (需 ≥ 30 点)，暂无法合规破冰，建议点击「摸牌放弃」。`, "warning");
                     return;
                 }
 
                 // 2. 已破冰情况下的出牌提示
-                const handMelds = findPureMelds(rack);
-                if (handMelds.length > 0) {
-                    const best = handMelds[0];
+                if (allCandidates.length > 0) {
+                    const best = [...allCandidates].sort((a, b) => getMeldPoints(b) - getMeldPoints(a))[0];
                     setSelectedHandTiles(best);
-                    notify(`💡 出牌提示：手牌可组成新组合 [${best.map(t => t.value).join('-')}]！已为您自动选中，点击右侧「打出」即可。`, "info");
+                    notify(`💡 出牌提示：手牌可组成新组合 [${best.map(t => t.isJoker ? '百搭' : t.value).join('-')}]！已为您自动选中，点击右侧「打出」即可。`, "info");
                     return;
                 }
 
@@ -1540,7 +1777,7 @@
                         if (newMeld) {
                             setSelectedHandTiles([tile]);
                             setSelectedMeldIndex(mIdx);
-                            notify(`💡 追加提示：手中的 [${tile.value}号牌] 可以合规拼接到桌面 #${mIdx + 1} 牌组！已选中该牌和目标牌组。`, "info");
+                            notify(`💡 追加提示：手中的 [${tile.isJoker ? '百搭' : tile.value}号牌] 可以合规拼接到桌面 #${mIdx + 1} 牌组！已选中该牌和目标牌组。`, "info");
                             return;
                         }
                     }
@@ -2183,105 +2420,16 @@
                 nextTurn(turnIndex, players, tableMelds, deck);
             };
 
-            // 全面重构的 AI 决策引擎：解决 Chief Bogo 一直摸牌不出牌的 Bug
+            // 全面重构的 AI 决策引擎：彻底解决任何 AI 玩家不破冰、一直摸牌的漏判 Bug
             const runAITurn = (aiIdx, currentPlayers, currentMelds, currentDeck) => {
                 const ai = currentPlayers[aiIdx];
                 let newTableMelds = JSON.parse(JSON.stringify(currentMelds));
                 let newRack = [...ai.rack];
 
-                // 健全的组合搜索算法：支持任意长度 3~13 的连顺，支持 3~4 张同号群组，支持百搭牌
-                const findAllCandidateMelds = (rack) => {
-                    const candidates = [];
-                    const jokers = rack.filter(t => t.isJoker && t.jokerType !== 'color_change' && t.jokerType !== 'mirror');
-
-                    // 1. 查找所有可能的群组 (3~4张)
-                    const valMap = {};
-                    rack.forEach(t => {
-                        if (!t.isJoker) {
-                            if (!valMap[t.value]) valMap[t.value] = [];
-                            if (!valMap[t.value].some(x => x.color === t.color)) valMap[t.value].push(t);
-                        }
-                    });
-                    for (const v in valMap) {
-                        const arr = valMap[v];
-                        if (arr.length >= 3) {
-                            candidates.push(arr.slice(0, 3));
-                            if (arr.length === 4) candidates.push(arr.slice(0, 4));
-                        } else if (arr.length === 2 && jokers.length >= 1) {
-                            candidates.push([...arr, jokers[0]]);
-                        }
-                    }
-
-                    // 2. 查找所有可能的顺组 (包含 4~13 张长顺子，不再提前截断！)
-                    const colorMap = { black: [], blue: [], red: [], amber: [] };
-                    rack.forEach(t => { if (!t.isJoker) colorMap[t.color].push(t); });
-
-                    for (const c in colorMap) {
-                        const sorted = colorMap[c].sort((a, b) => a.value - b.value);
-                        const unique = [];
-                        sorted.forEach(t => { if (!unique.some(x => x.value === t.value)) unique.push(t); });
-
-                        // 动态滑动窗口探索所有长度 >= 3 的连续序列
-                        for (let start = 0; start < unique.length; start++) {
-                            let run = [unique[start]];
-                            for (let next = start + 1; next < unique.length; next++) {
-                                if (unique[next].value === run[run.length - 1].value + 1) {
-                                    run.push(unique[next]);
-                                    if (run.length >= 3) {
-                                        candidates.push([...run]);
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-
-                        // 支持利用 1 张常规百搭搭桥顺子
-                        if (jokers.length >= 1) {
-                            for (let start = 0; start < unique.length; start++) {
-                                for (let next = start + 1; next < unique.length; next++) {
-                                    const diff = unique[next].value - unique[start].value;
-                                    if (diff === 2) { // 缺1张填百搭，例如 7-百搭-9
-                                        candidates.push([unique[start], jokers[0], unique[next]]);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    return candidates;
-                };
-
-                // 从候选牌组中寻找互不重叠（每张手牌只使用一次）且点数最大化的出牌组合
-                const findDisjointMelds = (candidates) => {
-                    let bestGroup = [];
-                    let maxPoints = 0;
-
-                    const search = (idx, currentGroup, usedIds, totalPoints) => {
-                        if (totalPoints > maxPoints) {
-                            maxPoints = totalPoints;
-                            bestGroup = [...currentGroup];
-                        }
-                        for (let i = idx; i < candidates.length; i++) {
-                            const meld = candidates[i];
-                            const meldIds = meld.map(t => t.id);
-                            if (meldIds.every(id => !usedIds.has(id))) {
-                                const pts = getMeldPoints(meld);
-                                const nextUsed = new Set(usedIds);
-                                meldIds.forEach(id => nextUsed.add(id));
-                                search(i + 1, [...currentGroup, meld], nextUsed, totalPoints + pts);
-                            }
-                        }
-                    };
-
-                    search(0, [], new Set(), 0);
-                    return { melds: bestGroup, points: maxPoints };
-                };
-
                 // AI 破冰逻辑
                 if (!ai.brokenIce) {
                     const allCandidates = findAllCandidateMelds(newRack);
-                    const solution = findDisjointMelds(allCandidates);
+                    const solution = findDisjointMelds(allCandidates, 30);
 
                     if (solution.points >= 30 && solution.melds.length > 0) {
                         const usedIds = new Set(solution.melds.flat().map(t => t.id));
@@ -2304,13 +2452,11 @@
                 } else {
                     // 已破冰 AI 出新牌组
                     const allCandidates = findAllCandidateMelds(newRack);
-                    const solution = findDisjointMelds(allCandidates);
-
-                    if (solution.melds.length > 0) {
-                        const s = solution.melds[0];
-                        const usedIds = new Set(s.map(t => t.id));
+                    if (allCandidates.length > 0) {
+                        const bestMeld = [...allCandidates].sort((a, b) => getMeldPoints(b) - getMeldPoints(a))[0];
+                        const usedIds = new Set(bestMeld.map(t => t.id));
                         newRack = newRack.filter(t => !usedIds.has(t.id));
-                        newTableMelds = [...newTableMelds, s];
+                        newTableMelds = [...newTableMelds, bestMeld];
 
                         const updatedPlayers = [...currentPlayers];
                         updatedPlayers[aiIdx] = { ...ai, rack: newRack };
@@ -2326,7 +2472,7 @@
                         return;
                     }
 
-                    // 追加牌到桌面已有组合
+                    // 追加单张牌到桌面已有组合
                     for (let mIdx = 0; mIdx < newTableMelds.length; mIdx++) {
                         const meld = newTableMelds[mIdx];
                         for (let rIdx = 0; rIdx < newRack.length; rIdx++) {
@@ -2347,6 +2493,36 @@
                                 }
                                 nextTurn(aiIdx, updatedPlayers, newTableMelds, currentDeck);
                                 return;
+                            }
+                        }
+                    }
+
+                    // 追加 2 张牌（例如顺组两端或变色组合）
+                    if (newRack.length >= 2) {
+                        for (let mIdx = 0; mIdx < newTableMelds.length; mIdx++) {
+                            const meld = newTableMelds[mIdx];
+                            for (let i = 0; i < newRack.length; i++) {
+                                for (let j = i + 1; j < newRack.length; j++) {
+                                    const pair = [newRack[i], newRack[j]];
+                                    const inserted = tryInsertBatchIntoMeld(meld, pair);
+                                    if (inserted) {
+                                        newTableMelds[mIdx] = inserted;
+                                        const usedIds = new Set(pair.map(t => t.id));
+                                        newRack = newRack.filter(t => !usedIds.has(t.id));
+                                        const updatedPlayers = [...currentPlayers];
+                                        updatedPlayers[aiIdx] = { ...ai, rack: newRack };
+                                        setPlayers(updatedPlayers);
+                                        setTableMelds(newTableMelds);
+                                        addLog(`🤖 ${ai.name} 追加了 2 张手牌到桌面 #${mIdx + 1}！`);
+
+                                        if (newRack.length === 0) {
+                                            handleVictory(ai);
+                                            return;
+                                        }
+                                        nextTurn(aiIdx, updatedPlayers, newTableMelds, currentDeck);
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }

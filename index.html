@@ -58,6 +58,7 @@
                 0 3px 5px -1px rgba(0, 0, 0, 0.4),
                 0 2px 3px -1px rgba(0, 0, 0, 0.2);
             transition: all 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+            touch-action: none;
         }
         .tile-3d:active {
             transform: translateY(2px) scale(0.97);
@@ -78,6 +79,24 @@
         @keyframes pulseGlow {
             0%, 100% { box-shadow: 0 0 8px #f59e0b, 0 0 16px rgba(245, 158, 11, 0.5); }
             50% { box-shadow: 0 0 16px #f59e0b, 0 0 24px rgba(245, 158, 11, 0.8); }
+        }
+
+        /* 拖拽吸附高亮插入指示器 */
+        .drop-insert-indicator {
+            width: 5px;
+            height: 48px;
+            margin: 0 -2px;
+            background: linear-gradient(180deg, #f59e0b 0%, #fbbf24 100%);
+            border-radius: 9999px;
+            box-shadow: 0 0 14px #f59e0b, 0 0 24px rgba(245, 158, 11, 0.8);
+            animation: pulseInsert 0.8s ease-in-out infinite alternate;
+            z-index: 30;
+            pointer-events: none;
+            flex-shrink: 0;
+        }
+        @keyframes pulseInsert {
+            0% { transform: scaleY(0.9); opacity: 0.75; }
+            100% { transform: scaleY(1.1); opacity: 1; }
         }
 
         /* 木质双阶牌架质感 */
@@ -500,9 +519,18 @@
             if (isValidGroup(tiles)) {
                 const sample = tiles.find(t => !t.isJoker);
                 const val = sample ? sample.value : 0;
-                let count = 0;
-                tiles.forEach(t => count += (t.jokerType === 'double' ? 2 : 1));
-                return val * count;
+                let sum = 0;
+                // 官方核心规则：镜像百搭分值严格为 0 点，不计入破冰点数
+                tiles.forEach(t => {
+                    if (t.jokerType === 'mirror') {
+                        sum += 0;
+                    } else if (t.jokerType === 'double') {
+                        sum += val * 2;
+                    } else {
+                        sum += val;
+                    }
+                });
+                return sum;
             }
             if (isValidRun(tiles)) {
                 const nonJokers = tiles.filter(t => !t.isJoker);
@@ -532,22 +560,60 @@
         };
 
         // 智能排序牌组：
-        // 1. 如果有镜像百搭，自动将镜像百搭放置在对称中心！
-        // 2. 如果是同色顺组，百搭牌优先填补空缺（如 6 与 8 之间自动填补百搭）！
-        // 3. 避免暴力将百搭丢到末尾导致合法牌被判非法！
+        // 1. 如果当前顺序或全排列已能构成合法顺组/群组，直接采用合法顺序！
+        // 2. 完美支持黄10+变色百搭+黑12等百搭在中间的变色顺组！
         const sortMeldSmart = (tiles) => {
             if (!tiles || tiles.length <= 1) return tiles;
+
+            // 若当前排列已合法，直接保留
+            if (isValidMeld(tiles)) return tiles;
+
+            // 针对 6 张以内的出牌选择，穷举全排列快速锁定能让 isValidMeld 为 true 的唯一正解
+            if (tiles.length <= 6) {
+                const getPermutations = (arr) => {
+                    if (arr.length <= 1) return [arr];
+                    if (arr.length === 2) return [arr, [arr[1], arr[0]]];
+                    const result = [];
+                    for (let i = 0; i < arr.length; i++) {
+                        const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+                        for (const p of getPermutations(rest)) {
+                            result.push([arr[i], ...p]);
+                        }
+                    }
+                    return result;
+                };
+
+                const perms = getPermutations(tiles);
+                for (const p of perms) {
+                    if (isValidMeld(p)) return p;
+                }
+            }
 
             // 1. 镜像百搭优先处理
             const mirrorTile = tiles.find(t => t.jokerType === 'mirror');
             if (mirrorTile) {
                 const others = tiles.filter(t => t.id !== mirrorTile.id);
-                // 对其余牌按数字/颜色排序并对半拆分置于镜像两侧
                 others.sort((a, b) => a.value - b.value || a.color.localeCompare(b.color));
                 const half = Math.floor(others.length / 2);
                 const left = others.slice(0, half);
                 const right = others.slice(half);
-                return [...left, mirrorTile, ...right];
+                const candidate = [...left, mirrorTile, ...right];
+                if (isValidMeld(candidate)) return candidate;
+            }
+
+            // 2. 变色百搭长顺组处理
+            const colorChangeTile = tiles.find(t => t.jokerType === 'color_change');
+            if (colorChangeTile) {
+                const others = tiles.filter(t => t.id !== colorChangeTile.id && !t.isJoker);
+                const colors = [...new Set(others.map(t => t.color))];
+                if (colors.length === 2) {
+                    const partA1 = others.filter(t => t.color === colors[0]).sort((a, b) => a.value - b.value);
+                    const partB1 = others.filter(t => t.color === colors[1]).sort((a, b) => a.value - b.value);
+                    const try1 = [...partA1, colorChangeTile, ...partB1];
+                    if (isValidMeld(try1)) return try1;
+                    const try2 = [...partB1, colorChangeTile, ...partA1];
+                    if (isValidMeld(try2)) return try2;
+                }
             }
 
             const nonJokers = tiles.filter(t => !t.isJoker);
@@ -558,7 +624,7 @@
             const firstCol = nonJokers[0].color;
             const isSingleColor = nonJokers.every(t => t.color === firstCol);
 
-            // 2. 顺组倾向（同色）：支持百搭牌智能填补断档空位（例如 6 与 8 之间填入百搭）
+            // 3. 顺组倾向（同色）：支持百搭牌智能填补断档空位（例如 6 与 8 之间填入百搭）
             if (isSingleColor && !jokers.some(j => j.jokerType === 'color_change')) {
                 const sortedNonJokers = [...nonJokers].sort((a, b) => a.value - b.value);
                 const result = [];
@@ -570,7 +636,6 @@
                         const lastNonJoker = result.slice().reverse().find(t => !t.isJoker);
                         if (lastNonJoker) {
                             const gap = current.value - lastNonJoker.value - 1;
-                            // 如果中间断档缺了牌且有百搭可用，自动把百搭填补在缝隙中！
                             if (gap > 0 && availableJokers.length > 0) {
                                 let filledGap = 0;
                                 while (filledGap < gap && availableJokers.length > 0) {
@@ -584,26 +649,24 @@
                     result.push(current);
                 }
 
-                // 剩余的百搭牌尝试追加到尾部或头部
                 while (availableJokers.length > 0) {
                     result.push(availableJokers.shift());
                 }
 
-                // 若以此方式形成的组合合法，直接采用；否则保留基础排序
                 if (isValidMeld(result)) return result;
 
-                // 备选尝试：百搭放头部
                 const headTry = [...jokers, ...sortedNonJokers];
                 if (isValidMeld(headTry)) return headTry;
 
                 return result;
             }
 
-            // 3. 群组倾向（同数字不同色）
+            // 4. 群组倾向（同数字不同色）
             const firstVal = nonJokers[0].value;
             const isSameValue = nonJokers.every(t => t.value === firstVal);
             if (isSameValue) {
-                return [...nonJokers.sort((a, b) => a.color.localeCompare(b.color)), ...jokers];
+                const groupCand = [...nonJokers.sort((a, b) => a.color.localeCompare(b.color)), ...jokers];
+                if (isValidMeld(groupCand)) return groupCand;
             }
 
             // 默认排序
@@ -723,6 +786,19 @@
             const colorChangeJokers = rack.filter(t => t.isJoker && t.jokerType === 'color_change');
             const mirrorJokers = rack.filter(t => t.isJoker && t.jokerType === 'mirror');
 
+            const colorsList = ['black', 'blue', 'red', 'amber'];
+
+            const tilesByColorAndVal = {};
+            colorsList.forEach(c => {
+                tilesByColorAndVal[c] = {};
+                for (let v = 1; v <= 13; v++) tilesByColorAndVal[c][v] = [];
+            });
+            normalTiles.forEach(t => {
+                if (tilesByColorAndVal[t.color] && tilesByColorAndVal[t.color][t.value]) {
+                    tilesByColorAndVal[t.color][t.value].push(t);
+                }
+            });
+
             // 1. 群组 (Groups): 同数字、不同颜色
             const valTiles = {};
             for (let v = 1; v <= 13; v++) valTiles[v] = { black: [], blue: [], red: [], amber: [] };
@@ -731,8 +807,6 @@
                     valTiles[t.value][t.color].push(t);
                 }
             });
-
-            const colorsList = ['black', 'blue', 'red', 'amber'];
 
             for (let v = 1; v <= 13; v++) {
                 const availableColors = colorsList.filter(c => valTiles[v][c].length > 0);
@@ -816,11 +890,7 @@
 
             // 2. 顺组 (Runs): 同颜色、连续数字
             for (const color of colorsList) {
-                const colorTilesByVal = {};
-                for (let v = 1; v <= 13; v++) colorTilesByVal[v] = [];
-                normalTiles.filter(t => t.color === color).forEach(t => {
-                    colorTilesByVal[t.value].push(t);
-                });
+                const colorTilesByVal = tilesByColorAndVal[color];
 
                 // 2a. 纯数字连续顺组 (滑动窗口支持所有副本分支)
                 for (let start = 1; start <= 11; start++) {
@@ -903,30 +973,50 @@
                 }
             }
 
-            // 3. 变色百搭顺组 (Color Change Joker)
+            // 3. 变色百搭顺组 (Color Change Joker)：支持 3 张起步（如黄10+变色+黑12）全长度顺组
             if (colorChangeJokers.length >= 1) {
                 const cJoker = colorChangeJokers[0];
-                for (let start = 1; start <= 9; start++) {
+                for (let jokerVal = 2; jokerVal <= 12; jokerVal++) {
                     for (const colA of colorsList) {
-                        const tilesA1 = normalTiles.filter(t => t.color === colA && t.value === start);
-                        const tilesA2 = normalTiles.filter(t => t.color === colA && t.value === start + 1);
-                        if (tilesA1.length === 0 || tilesA2.length === 0) continue;
-
                         for (const colB of colorsList) {
-                            if (colB === colA) continue;
-                            const tilesB1 = normalTiles.filter(t => t.color === colB && t.value === start + 3);
-                            const tilesB2 = normalTiles.filter(t => t.color === colB && t.value === start + 4);
-                            if (tilesB1.length === 0 || tilesB2.length === 0) continue;
+                            if (colA === colB) continue;
 
-                            tilesA1.forEach(a1 => {
-                                tilesA2.forEach(a2 => {
-                                    tilesB1.forEach(b1 => {
-                                        tilesB2.forEach(b2 => {
-                                            addCandidate([a1, a2, cJoker, b1, b2]);
-                                        });
-                                    });
-                                });
-                            });
+                            for (let lenA = 1; lenA <= 3; lenA++) {
+                                const startA = jokerVal - lenA;
+                                if (startA < 1) continue;
+
+                                for (let lenB = 1; lenB <= 3; lenB++) {
+                                    if (lenA + 1 + lenB < 3) continue;
+                                    const endB = jokerVal + lenB;
+                                    if (endB > 13) continue;
+
+                                    let hasAllA = true;
+                                    const tilesA = [];
+                                    for (let v = startA; v < jokerVal; v++) {
+                                        if (tilesByColorAndVal[colA][v].length > 0) {
+                                            tilesA.push(tilesByColorAndVal[colA][v][0]);
+                                        } else {
+                                            hasAllA = false;
+                                            break;
+                                        }
+                                    }
+                                    if (!hasAllA) continue;
+
+                                    let hasAllB = true;
+                                    const tilesB = [];
+                                    for (let v = jokerVal + 1; v <= endB; v++) {
+                                        if (tilesByColorAndVal[colB][v].length > 0) {
+                                            tilesB.push(tilesByColorAndVal[colB][v][0]);
+                                        } else {
+                                            hasAllB = false;
+                                            break;
+                                        }
+                                    }
+                                    if (!hasAllB) continue;
+
+                                    addCandidate([...tilesA, cJoker, ...tilesB]);
+                                }
+                            }
                         }
                     }
                 }
@@ -1001,7 +1091,18 @@
             return { melds: bestGroup, points: maxPoints };
         };
 
-        const Tile = ({ tile, isSelected, onClick, size = "md", customClass = "", isNewlyPlayed = false }) => {
+        const Tile = ({ 
+            tile, 
+            isSelected, 
+            onClick, 
+            onPointerDown,
+            size = "md", 
+            customClass = "", 
+            isNewlyPlayed = false,
+            isDragging = false,
+            dataMeldTile = false,
+            tileIndex = null
+        }) => {
             const colorConfig = TILE_COLORS[tile.color] || TILE_COLORS.black;
             
             const sizeStyle = {
@@ -1013,14 +1114,17 @@
             return (
                 <div 
                     onClick={onClick}
-                    className={`tile-3d relative flex flex-col items-center justify-between p-1 cursor-pointer shrink-0 border border-amber-950/20 ${sizeStyle} ${
+                    onPointerDown={onPointerDown}
+                    data-meld-tile={dataMeldTile ? "true" : undefined}
+                    data-tile-index={tileIndex !== null ? tileIndex : undefined}
+                    className={`tile-3d relative flex flex-col items-center justify-between p-1 cursor-grab active:cursor-grabbing shrink-0 border border-amber-950/20 select-none ${sizeStyle} ${
                         isSelected ? 'tile-selected ring-4 ring-amber-500 scale-105 z-10' : ''
                     } ${isNewlyPlayed ? 'tile-newly-played ring-2 ring-emerald-400' : ''} ${
                         tile.isRetrieved ? 'tile-retrieved-glow ring-2 ring-amber-400' : ''
-                    } ${customClass}`}
+                    } ${isDragging ? 'opacity-30 scale-95 border-dashed border-amber-400' : ''} ${customClass}`}
                 >
-                    <div className="w-1.5 h-1.5 rounded-full bg-slate-300/80 mb-0.5"></div>
-                    <div className="flex-1 flex items-center justify-center font-black tracking-tighter">
+                    <div className="w-1.5 h-1.5 rounded-full bg-slate-300/80 mb-0.5 pointer-events-none"></div>
+                    <div className="flex-1 flex items-center justify-center font-black tracking-tighter pointer-events-none">
                         {tile.isJoker ? (
                             <JokerArt type={tile.jokerType || 'regular'} color={tile.color} size={size === 'sm' ? 20 : 28} />
                         ) : (
@@ -1030,11 +1134,11 @@
                         )}
                     </div>
                     {isNewlyPlayed ? (
-                        <span className="text-[7px] font-black text-emerald-700 bg-emerald-200 px-1 rounded-sm leading-none">本回</span>
+                        <span className="text-[7px] font-black text-emerald-700 bg-emerald-200 px-1 rounded-sm leading-none pointer-events-none">本回</span>
                     ) : tile.isRetrieved ? (
-                        <span className="text-[7px] font-black text-amber-600 bg-amber-200 px-1 rounded-sm leading-none">待出</span>
+                        <span className="text-[7px] font-black text-amber-600 bg-amber-200 px-1 rounded-sm leading-none pointer-events-none">待出</span>
                     ) : (
-                        <div className="w-4 h-1 border-b-2 border-slate-300 rounded-full mb-0.5 opacity-60"></div>
+                        <div className="w-4 h-1 border-b-2 border-slate-300 rounded-full mb-0.5 opacity-60 pointer-events-none"></div>
                     )}
                 </div>
             );
@@ -1046,6 +1150,8 @@
             isSelected, 
             onClick, 
             onTileClick, 
+            onTilePointerDown,
+            dragState,
             selectedTileInfo,
             initialTableTileIds,
             onMoveInside,
@@ -1064,19 +1170,27 @@
             const hasNewTiles = meld.some(t => initialTableTileIds && !initialTableTileIds.has(t.id));
             const isSelectedMeldHavingSelectedTile = selectedTileInfo && selectedTileInfo.meldIndex === index;
 
+            // 拖拽悬停至本组时的目标插入插槽位置
+            const isDropTargetMeld = dragState?.isDragging && dragState?.targetInfo?.type === 'meld' && dragState?.targetInfo?.meldIndex === index;
+            const targetSlotIndex = isDropTargetMeld ? dragState?.targetInfo?.slotIndex : null;
+
             return (
                 <div 
                     onClick={onClick}
-                    className={`relative p-2 rounded-2xl transition-all duration-200 border-2 ${
+                    data-meld-group="true"
+                    data-meld-index={index}
+                    className={`relative p-2 rounded-2xl transition-all duration-200 border-2 select-none ${
                         isSelectedMeldHavingSelectedTile ? 'z-30 ' : ''
                     }${
-                        isSelected 
-                            ? 'border-amber-400 bg-amber-500/15 shadow-[0_0_20px_rgba(245,158,11,0.25)]' 
-                            : valid 
-                                ? hasNewTiles 
-                                    ? 'border-emerald-500/80 bg-emerald-950/20 ring-1 ring-emerald-500/40' 
-                                    : 'border-slate-700/70 bg-slate-900/60 hover:border-slate-500' 
-                                : 'border-rose-500 bg-rose-950/40 animate-pulse'
+                        isDropTargetMeld
+                            ? 'border-yellow-400 bg-amber-500/20 shadow-[0_0_25px_rgba(245,158,11,0.4)] ring-2 ring-yellow-400'
+                            : isSelected 
+                                ? 'border-amber-400 bg-amber-500/15 shadow-[0_0_20px_rgba(245,158,11,0.25)]' 
+                                : valid 
+                                    ? hasNewTiles 
+                                        ? 'border-emerald-500/80 bg-emerald-950/20 ring-1 ring-emerald-500/40' 
+                                        : 'border-slate-700/70 bg-slate-900/60 hover:border-slate-500' 
+                                    : 'border-rose-500 bg-rose-950/40 animate-pulse'
                     } flex flex-col gap-1 shrink-0 cursor-pointer`}
                 >
                     {/* 就近悬浮操作栏（贴紧选中的牌组显示，触手可及！） */}
@@ -1166,7 +1280,7 @@
                         </div>
                     )}
 
-                    <div className="flex items-center justify-between px-1 text-[10px] font-mono font-bold tracking-wider mb-0.5 whitespace-nowrap">
+                    <div className="flex items-center justify-between px-1 text-[10px] font-mono font-bold tracking-wider mb-0.5 whitespace-nowrap pointer-events-none">
                         <div className="flex items-center gap-1.5">
                             <span className="text-slate-400">#{index + 1}</span>
                             {hasNewTiles && (
@@ -1186,20 +1300,36 @@
                         )}
                     </div>
 
-                    <div className="flex items-center gap-1.5 min-h-[58px]">
-                        {meld.map((tile, tIdx) => (
-                            <Tile
-                                key={tile.id}
-                                tile={tile}
-                                size="md"
-                                isSelected={selectedTileInfo?.tile?.id === tile.id}
-                                isNewlyPlayed={initialTableTileIds && !initialTableTileIds.has(tile.id)}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onTileClick(tile, index, tIdx);
-                                }}
-                            />
-                        ))}
+                    <div className="flex items-center gap-1.5 min-h-[58px] relative">
+                        {meld.map((tile, tIdx) => {
+                            const isBeingDragged = dragState?.isDragging && dragState?.sourceInfo?.type === 'table' && dragState?.sourceInfo?.meldIndex === index && dragState?.sourceInfo?.tileIndex === tIdx;
+                            const showInsertBefore = targetSlotIndex === tIdx;
+                            const showInsertAfter = targetSlotIndex === meld.length && tIdx === meld.length - 1;
+
+                            return (
+                                <React.Fragment key={tile.id}>
+                                    {showInsertBefore && <div className="drop-insert-indicator" />}
+                                    <Tile
+                                        tile={tile}
+                                        size="md"
+                                        isSelected={selectedTileInfo?.tile?.id === tile.id}
+                                        isNewlyPlayed={initialTableTileIds && !initialTableTileIds.has(tile.id)}
+                                        isDragging={isBeingDragged}
+                                        dataMeldTile={true}
+                                        tileIndex={tIdx}
+                                        onPointerDown={(e) => onTilePointerDown(e, tile, { type: 'table', meldIndex: index, tileIndex: tIdx })}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onTileClick(tile, index, tIdx);
+                                        }}
+                                    />
+                                    {showInsertAfter && <div className="drop-insert-indicator" />}
+                                </React.Fragment>
+                            );
+                        })}
+                        {meld.length === 0 && isDropTargetMeld && (
+                            <div className="drop-insert-indicator" />
+                        )}
                     </div>
                 </div>
             );
@@ -1554,6 +1684,10 @@
             const [logs, setLogs] = useState([]);
             const [winner, setWinner] = useState(null);
 
+            // 拖拽手势状态
+            const [dragState, setDragState] = useState(null);
+            const dragStartRef = useRef(null);
+
             // 防误触摸牌确认弹窗
             const [showDrawConfirmModal, setShowDrawConfirmModal] = useState(false);
 
@@ -1565,17 +1699,31 @@
 
             const aiTimeoutRef = useRef(null);
 
+            // 保持最新状态引用的 Refs，防止 Window 事件闭包陈旧
+            const tableMeldsRef = useRef(tableMelds);
+            tableMeldsRef.current = tableMelds;
+            const playersRef = useRef(players);
+            playersRef.current = players;
+            const turnSnapshotRef = useRef(turnSnapshot);
+            turnSnapshotRef.current = turnSnapshot;
+
             // 锁定人类玩家与当前回合行动者
             const humanIndex = players.findIndex(p => !p.isComputer);
             const humanPlayer = humanIndex !== -1 ? players[humanIndex] : (players[0] || null);
+            const humanPlayerRef = useRef(humanPlayer);
+            humanPlayerRef.current = humanPlayer;
             const currentPlayer = players[turnIndex] || null;
             const isHumanTurn = currentPlayer && !currentPlayer.isComputer && gameState === 'playing';
+            const isHumanTurnRef = useRef(isHumanTurn);
+            isHumanTurnRef.current = isHumanTurn;
 
             // 桌面初始牌集合（用于高亮显示本回合新打出的牌）
             const initialTableTileIds = useMemo(() => {
                 if (!turnSnapshot || !turnSnapshot.tableMelds) return new Set();
                 return new Set(turnSnapshot.tableMelds.flat().map(t => t.id));
             }, [turnSnapshot]);
+            const initialTableTileIdsRef = useRef(initialTableTileIds);
+            initialTableTileIdsRef.current = initialTableTileIds;
 
             const isEntireTableValid = useMemo(() => {
                 if (tableMelds.length === 0) return true;
@@ -1601,6 +1749,252 @@
 
                 return canTileSubstituteJoker(targetMeld, joker, selectedHandTiles);
             }, [isJokerSelectedOnTable, selectedTableTile, selectedHandTiles, tableMelds, humanPlayer, isHumanTurn]);
+
+            const handleTilePointerDown = (e, tile, sourceInfo) => {
+                if (!isHumanTurnRef.current) return;
+                // 仅响应鼠标左键或触摸事件
+                if (e.button !== undefined && e.button !== 0) return;
+
+                dragStartRef.current = {
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    tile,
+                    sourceInfo,
+                    hasMoved: false
+                };
+            };
+
+            const executeDrop = (tile, sourceInfo, targetInfo) => {
+                if (!targetInfo || !isHumanTurnRef.current || !humanPlayerRef.current) return;
+                const currentMelds = JSON.parse(JSON.stringify(tableMeldsRef.current));
+                const currentHuman = humanPlayerRef.current;
+                const hIdx = playersRef.current.findIndex(p => !p.isComputer);
+
+                // 1. 拖入目标牌组（内部重排或跨组追加/插入）
+                if (targetInfo.type === 'meld') {
+                    const { meldIndex: tMeldIdx, slotIndex: tSlotIdx } = targetInfo;
+                    if (tMeldIdx < 0 || tMeldIdx >= currentMelds.length) return;
+
+                    // 场景 1A：同一牌组内调整位置（解决镜像百搭/长顺组插空问题！）
+                    if (sourceInfo.type === 'table' && sourceInfo.meldIndex === tMeldIdx) {
+                        const fromIdx = sourceInfo.tileIndex;
+                        let toIdx = tSlotIdx;
+                        if (fromIdx === toIdx || fromIdx === toIdx - 1) return; // 位置未变
+
+                        recordStepSnapshot();
+                        sfx.playTileClick();
+
+                        const meld = [...currentMelds[tMeldIdx]];
+                        const [movedTile] = meld.splice(fromIdx, 1);
+                        if (fromIdx < toIdx) toIdx--; // 移除自身后修正目标索引
+                        meld.splice(toIdx, 0, movedTile);
+                        currentMelds[tMeldIdx] = meld;
+
+                        setTableMelds(currentMelds);
+                        setSelectedTableTile({ tile: movedTile, meldIndex: tMeldIdx, tileIndex: toIdx });
+                        notify(`已将牌块平移至目标位置！`, "info");
+                        return;
+                    }
+
+                    // 场景 1B：从桌面上其他牌组拖入当前牌组
+                    if (sourceInfo.type === 'table' && sourceInfo.meldIndex !== tMeldIdx) {
+                        const sMeldIdx = sourceInfo.meldIndex;
+                        const sTileIdx = sourceInfo.tileIndex;
+
+                        recordStepSnapshot();
+                        sfx.playTileClick();
+
+                        // 从源牌组移除
+                        const sourceMeld = currentMelds[sMeldIdx].filter((_, idx) => idx !== sTileIdx);
+                        const [movedTile] = currentMelds[sMeldIdx].splice(sTileIdx, 1);
+
+                        // 插入目标牌组
+                        const targetMeld = [...currentMelds[tMeldIdx]];
+                        targetMeld.splice(tSlotIdx, 0, movedTile);
+                        currentMelds[tMeldIdx] = targetMeld;
+
+                        // 过滤清理空牌组
+                        const updatedMelds = currentMelds.filter(m => m.length > 0);
+                        setTableMelds(updatedMelds);
+                        setSelectedTableTile(null);
+                        notify(`已成功拖拽移入桌面 #${tMeldIdx + 1} 牌组！`, "info");
+                        return;
+                    }
+
+                    // 场景 1C：从手牌架直接拖入桌面已有牌组
+                    if (sourceInfo.type === 'hand') {
+                        if (!currentHuman.brokenIce) {
+                            notify("您尚未破冰（首出需≥30点且完全出自手牌），不可拼接桌面公共牌！", "error");
+                            return;
+                        }
+
+                        recordStepSnapshot();
+                        sfx.playTileClick();
+
+                        // 从手牌移除
+                        const newRack = currentHuman.rack.filter(t => t.id !== tile.id);
+                        const updatedPlayers = [...playersRef.current];
+                        updatedPlayers[hIdx] = { ...currentHuman, rack: newRack };
+
+                        // 插入目标牌组
+                        const targetMeld = [...currentMelds[tMeldIdx]];
+                        targetMeld.splice(tSlotIdx, 0, { ...tile, isRetrieved: false });
+                        currentMelds[tMeldIdx] = targetMeld;
+
+                        setTableMelds(currentMelds);
+                        setPlayers(updatedPlayers);
+                        setSelectedHandTiles([]);
+                        notify(`已将手牌拖入桌面 #${tMeldIdx + 1} 牌组！`, "info");
+                        return;
+                    }
+                }
+
+                // 2. 拖入公共牌桌空白区（自成新牌组）
+                if (targetInfo.type === 'table-new') {
+                    // 从手牌拖入空白区
+                    if (sourceInfo.type === 'hand') {
+                        recordStepSnapshot();
+                        sfx.playSuccess();
+
+                        const newRack = currentHuman.rack.filter(t => t.id !== tile.id);
+                        const updatedPlayers = [...playersRef.current];
+                        updatedPlayers[hIdx] = { ...currentHuman, rack: newRack };
+
+                        const newMelds = [...currentMelds, [{ ...tile, isRetrieved: false }]];
+                        setTableMelds(newMelds);
+                        setPlayers(updatedPlayers);
+                        setSelectedHandTiles([]);
+                        notify(`已将牌块拖放到牌桌，创建了新牌组！`, "info");
+                        return;
+                    }
+
+                    // 从桌面牌组抽离到空白区
+                    if (sourceInfo.type === 'table') {
+                        const sMeldIdx = sourceInfo.meldIndex;
+                        if (currentMelds[sMeldIdx].length <= 1) return; // 已经是独立单张
+
+                        recordStepSnapshot();
+                        sfx.playTileClick();
+
+                        const remainingMeld = currentMelds[sMeldIdx].filter((_, idx) => idx !== sourceInfo.tileIndex);
+                        const newMelds = currentMelds.filter((_, idx) => idx !== sMeldIdx);
+                        if (remainingMeld.length > 0) {
+                            newMelds.splice(sMeldIdx, 0, remainingMeld);
+                        }
+                        newMelds.push([tile]);
+
+                        setTableMelds(newMelds);
+                        setSelectedTableTile(null);
+                        notify(`已将牌块拖拽抽离为独立牌组！`, "info");
+                        return;
+                    }
+                }
+
+                // 3. 拖回底部手牌架（撤回手牌）
+                if (targetInfo.type === 'rack') {
+                    if (sourceInfo.type === 'table') {
+                        const initialIds = initialTableTileIdsRef.current;
+                        if (initialIds && initialIds.has(tile.id)) {
+                            notify("桌面原本已有的公共牌不可直接收回手牌架！", "error");
+                            return;
+                        }
+
+                        recordStepSnapshot();
+                        sfx.playUndo();
+
+                        const sMeldIdx = sourceInfo.meldIndex;
+                        const filteredMeld = currentMelds[sMeldIdx].filter((_, idx) => idx !== sourceInfo.tileIndex);
+                        const newMelds = currentMelds.filter((_, idx) => idx !== sMeldIdx);
+                        if (filteredMeld.length > 0) {
+                            newMelds.splice(sMeldIdx, 0, filteredMeld);
+                        }
+
+                        const newRack = [...currentHuman.rack, tile];
+                        const updatedPlayers = [...playersRef.current];
+                        updatedPlayers[hIdx] = { ...currentHuman, rack: newRack };
+
+                        setTableMelds(newMelds);
+                        setPlayers(updatedPlayers);
+                        setSelectedTableTile(null);
+                        notify(`已将牌块拖回手牌架！`, "info");
+                        return;
+                    }
+                }
+            };
+
+            // 全局 Pointer 监听（确保划出屏幕边缘时拖拽不断触）
+            useEffect(() => {
+                const handlePointerMove = (e) => {
+                    if (!dragStartRef.current) return;
+                    const { startX, startY, tile, sourceInfo, hasMoved } = dragStartRef.current;
+                    const dx = e.clientX - startX;
+                    const dy = e.clientY - startY;
+
+                    if (!hasMoved && Math.hypot(dx, dy) > 5) {
+                        dragStartRef.current.hasMoved = true;
+                    }
+
+                    if (dragStartRef.current.hasMoved) {
+                        // 寻找指针下方的落位目标
+                        let targetInfo = null;
+                        const elUnder = document.elementFromPoint(e.clientX, e.clientY);
+                        if (elUnder) {
+                            const tileEl = elUnder.closest('[data-meld-tile="true"]');
+                            const meldEl = elUnder.closest('[data-meld-group="true"]');
+                            const rackEl = elUnder.closest('[data-rack-zone="true"]');
+                            const tableAreaEl = elUnder.closest('[data-table-area="true"]');
+
+                            if (tileEl && meldEl) {
+                                const mIdx = parseInt(meldEl.dataset.meldIndex, 10);
+                                const tIdx = parseInt(tileEl.dataset.tileIndex, 10);
+                                const rect = tileEl.getBoundingClientRect();
+                                const isAfter = e.clientX > (rect.left + rect.width / 2);
+                                targetInfo = { type: 'meld', meldIndex: mIdx, slotIndex: isAfter ? tIdx + 1 : tIdx };
+                            } else if (meldEl) {
+                                const mIdx = parseInt(meldEl.dataset.meldIndex, 10);
+                                const meldLen = tableMeldsRef.current[mIdx]?.length || 0;
+                                targetInfo = { type: 'meld', meldIndex: mIdx, slotIndex: meldLen };
+                            } else if (rackEl) {
+                                targetInfo = { type: 'rack' };
+                            } else if (tableAreaEl) {
+                                targetInfo = { type: 'table-new' };
+                            }
+                        }
+
+                        setDragState({
+                            tile,
+                            sourceInfo,
+                            x: e.clientX,
+                            y: e.clientY,
+                            isDragging: true,
+                            targetInfo
+                        });
+                    }
+                };
+
+                const handlePointerUp = (e) => {
+                    if (!dragStartRef.current) return;
+                    const { tile, sourceInfo, hasMoved } = dragStartRef.current;
+                    const lastTargetInfo = dragState?.targetInfo || null;
+
+                    dragStartRef.current = null;
+                    setDragState(null);
+
+                    if (hasMoved) {
+                        executeDrop(tile, sourceInfo, lastTargetInfo);
+                    }
+                };
+
+                window.addEventListener('pointermove', handlePointerMove, { passive: true });
+                window.addEventListener('pointerup', handlePointerUp);
+                window.addEventListener('pointercancel', handlePointerUp);
+
+                return () => {
+                    window.removeEventListener('pointermove', handlePointerMove);
+                    window.removeEventListener('pointerup', handlePointerUp);
+                    window.removeEventListener('pointercancel', handlePointerUp);
+                };
+            }, [dragState]);
 
             useEffect(() => {
                 return () => {
@@ -2828,13 +3222,20 @@
                             </div>
 
                             {/* 牌桌虚线区域：对局全程完整保留虚线外框 */}
-                            <div className="flex-1 border-2 border-dashed border-slate-700/60 rounded-3xl p-3 sm:p-4 overflow-y-auto custom-scrollbar flex flex-col relative bg-slate-950/20 backdrop-blur-[2px]">
+                            <div 
+                                data-table-area="true"
+                                className={`flex-1 border-2 border-dashed rounded-3xl p-3 sm:p-4 overflow-y-auto custom-scrollbar flex flex-col relative backdrop-blur-[2px] transition-colors ${
+                                    dragState?.isDragging && dragState?.targetInfo?.type === 'table-new'
+                                        ? 'border-yellow-400/80 bg-amber-500/10'
+                                        : 'border-slate-700/60 bg-slate-950/20'
+                                }`}
+                            >
                                 {tableMelds.length === 0 ? (
-                                    <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 py-8">
+                                    <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 py-8 pointer-events-none">
                                         <JokerArt type="regular" color="red" size={56} />
                                         <p className="mt-3 text-base font-bold text-slate-300">公共牌桌暂无牌组</p>
                                         <p className="text-xs text-slate-400 mt-1 max-w-md">
-                                            从下方双排牌架选择顺组或群组，点击右侧「作为新牌组打出」！首次出牌点数需 ≥ 30 点破冰。可随时点击「出牌提示」获取指导！
+                                            从下方双排牌架选择或直接拖拽卡牌上桌！首次出牌点数需 ≥ 30 点破冰。可随时点击「出牌提示」获取指导！
                                         </p>
                                     </div>
                                 ) : (
@@ -2847,8 +3248,10 @@
                                                 isSelected={selectedMeldIndex === idx}
                                                 selectedTileInfo={selectedTableTile}
                                                 initialTableTileIds={initialTableTileIds}
+                                                dragState={dragState}
                                                 onClick={() => appendSelectedToMeld(idx)}
                                                 onTileClick={handleTableTileClick}
+                                                onTilePointerDown={handleTilePointerDown}
                                                 onMoveInside={moveTileInsideMeld}
                                                 onSplit={splitMeldAtSelectedTile}
                                                 onExtract={extractTileToNewMeld}
@@ -2872,7 +3275,14 @@
                         const rackRow2 = humanRack.slice(halfIdx);
 
                         return (
-                            <div className="h-60 sm:h-64 wood-rack flex flex-col p-2.5 z-40 shrink-0 shadow-2xl">
+                            <div 
+                                data-rack-zone="true"
+                                className={`h-60 sm:h-64 wood-rack flex flex-col p-2.5 z-40 shrink-0 shadow-2xl transition-all ${
+                                    dragState?.isDragging && dragState?.targetInfo?.type === 'rack'
+                                        ? 'ring-4 ring-amber-400 bg-amber-950/30'
+                                        : ''
+                                }`}
+                            >
                                 <div className="flex items-center justify-between px-2 mb-1.5 overflow-x-auto custom-scrollbar">
                                     <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
                                         <span className="text-xl">{humanPlayer?.avatar}</span>
@@ -2956,15 +3366,20 @@
                                             <div className="px-1 text-[9px] text-amber-500/70 font-mono select-none uppercase font-bold shrink-0">
                                                 上排
                                             </div>
-                                            {rackRow1.map(tile => (
-                                                <Tile
-                                                    key={tile.id}
-                                                    tile={tile}
-                                                    size="md"
-                                                    isSelected={selectedHandTiles.some(t => t.id === tile.id)}
-                                                    onClick={() => toggleSelectHandTile(tile)}
-                                                />
-                                            ))}
+                                            {rackRow1.map((tile, rIdx) => {
+                                                const isDraggingThis = dragState?.isDragging && dragState?.sourceInfo?.type === 'hand' && dragState?.tile?.id === tile.id;
+                                                return (
+                                                    <Tile
+                                                        key={tile.id}
+                                                        tile={tile}
+                                                        size="md"
+                                                        isDragging={isDraggingThis}
+                                                        isSelected={selectedHandTiles.some(t => t.id === tile.id)}
+                                                        onPointerDown={(e) => handleTilePointerDown(e, tile, { type: 'hand', tileIndex: rIdx })}
+                                                        onClick={() => toggleSelectHandTile(tile)}
+                                                    />
+                                                );
+                                            })}
                                             {rackRow1.length === 0 && (
                                                 <div className="text-xs text-slate-600 italic px-4">空</div>
                                             )}
@@ -2975,15 +3390,21 @@
                                             <div className="px-1 text-[9px] text-amber-500/70 font-mono select-none uppercase font-bold shrink-0">
                                                 下排
                                             </div>
-                                            {rackRow2.map(tile => (
-                                                <Tile
-                                                    key={tile.id}
-                                                    tile={tile}
-                                                    size="md"
-                                                    isSelected={selectedHandTiles.some(t => t.id === tile.id)}
-                                                    onClick={() => toggleSelectHandTile(tile)}
-                                                />
-                                            ))}
+                                            {rackRow2.map((tile, rIdx) => {
+                                                const actualIndex = halfIdx + rIdx;
+                                                const isDraggingThis = dragState?.isDragging && dragState?.sourceInfo?.type === 'hand' && dragState?.tile?.id === tile.id;
+                                                return (
+                                                    <Tile
+                                                        key={tile.id}
+                                                        tile={tile}
+                                                        size="md"
+                                                        isDragging={isDraggingThis}
+                                                        isSelected={selectedHandTiles.some(t => t.id === tile.id)}
+                                                        onPointerDown={(e) => handleTilePointerDown(e, tile, { type: 'hand', tileIndex: actualIndex })}
+                                                        onClick={() => toggleSelectHandTile(tile)}
+                                                    />
+                                                );
+                                            })}
                                             {rackRow2.length === 0 && (
                                                 <div className="text-xs text-slate-600 italic px-4">空</div>
                                             )}
@@ -3024,6 +3445,20 @@
                             </div>
                         );
                     })()}
+
+                    {/* 悬浮跟随手指/鼠标的拖拽卡牌克隆体 */}
+                    {dragState && dragState.isDragging && (
+                        <div 
+                            className="fixed pointer-events-none z-[100] transform -translate-x-1/2 -translate-y-1/2 scale-110 rotate-3 transition-transform"
+                            style={{ left: dragState.x, top: dragState.y }}
+                        >
+                            <Tile 
+                                tile={dragState.tile} 
+                                size="md" 
+                                customClass="shadow-[0_16px_36px_rgba(0,0,0,0.7)] ring-4 ring-yellow-400" 
+                            />
+                        </div>
+                    )}
 
                     {/* 结算弹窗 (Game Over Modal) */}
                     {gameState === 'end' && (
